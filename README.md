@@ -1,6 +1,6 @@
 # Bacon Egg and Cheese
 
-![BEC: bacon, egg and cheese sandwich beside an email investigation magnifier](docs/assets/BEC-Bacon-Egg-and-Cheese.webp)
+![BEC: bacon, egg and cheese sandwich beside an email investigation magnifier](docs/assets/BEC-Banner.gif)
 
 BEC v0.9.0 is a standalone business email compromise investigation tool for Microsoft 365 and Google Workspace. Give it a tenant, an account and a time window to build one chronology from Entra, Exchange, Defender email telemetry and Workspace audit records. Compare saved cases, search exact typed indicators, or inspect a current mailbox snapshot beside historical rule evidence offline, with original source pointers and visible coverage limits. The `bacon-egg-and-cheese` distribution owns the `bec` package, command, report templates, and synthetic fixtures; it does not require another incident-response project.
 
