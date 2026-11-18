@@ -5,6 +5,7 @@ from collections import Counter, defaultdict, deque
 from datetime import timedelta
 from fnmatch import fnmatchcase
 
+from .evidence import evidence_references
 from .storage import DATA, digest, encode, iso, read, timestamp
 from .messages import include_message_artifacts
 
@@ -219,7 +220,8 @@ def correlate(events, excluded_ips=()):
                     findings.append(dict(tenant=e["tenant_id"], id=fid, rule=rule["id"],
                         observation=rule["name"], join=dict(zip(rule["keys"], key)),
                         assessment="Strongly Supported", confidence="High", event_ids=ids,
-                        evidence=[v["evidence"] for v in chain]))
+                        evidence=[v["evidence"] for v in chain],
+                        event_evidence=[dict(event_id=v["event_id"], references=evidence_references(v)) for v in chain]))
                     for v in chain:
                         v["finding_ids"].append(fid)
                         if v["assessment"] == "Unknown":

@@ -18,6 +18,7 @@ const el=id=>document.getElementById(id);
 el("view").setAttribute("aria-label","Timeline");
 function node(tag,text){const n=document.createElement(tag);if(text!=null)n.textContent=text;return n}
 function fmt(utc){return utc.replace("T"," ").replace(/\.0+Z$/,"Z")}
+function referenceLabel(count){return count+" source reference"+(count===1?"":"s")}
 el("identity").textContent=[s.tenant,s.user,s.case_id].join("  /  ");
 el("window").textContent=fmt(s.start)+"  →  "+fmt(s.end);
 for(const [value,title] of [[s.event_count,"events"],[s.investigation_rows,"investigation rows"],[s.findings,"findings"],[s.mailbox_message_matches,"mailbox/message matches"],[s.gaps,"telemetry gaps"]]){
@@ -26,6 +27,10 @@ el("gap-title").textContent="Telemetry gaps ("+s.gaps+")";
 for(const g of data.gaps){el("gap-list").append(node("li",[g.dataset,g.value,g.reason,g.evidence?g.evidence.file+" ["+g.evidence.record_index+"]":""].filter(Boolean).join(" · ")))}
 el("find-title").textContent="Correlation findings ("+s.findings+")";
 for(const f of data.findings){const li=node("li",f.observation+" · "+Object.values(f.join).join(" / "));li.append(node("small",f.id+" · "+f.event_ids.join(" → ")));
+ const groups=f.event_evidence||f.event_ids.map((id,i)=>({event_id:id,references:[f.evidence[i]]}));
+ const detail=node("details"),list=node("ul");detail.append(node("summary",referenceLabel(groups.reduce((count,g)=>count+g.references.length,0))));
+ for(const group of groups){const item=node("li",group.event_id);item.append(referenceList(group.references));list.append(item)}
+ detail.append(list);li.append(detail);
  const b=node("button","Show linked events");b.onclick=()=>{el("reset").click();el("view").value="complete";el("search").value=f.id;resetPage();el("rows").scrollIntoView()};li.append(b);el("find-list").append(li)}
 const fields=[["source","Source"],["actor","Actor"],["src_ip","IP"],["phase","Phase"],["assessment","Assessment"]];
 const filters={};
@@ -44,9 +49,14 @@ for(const m of data.messages){
 }
 el("message-panel").hidden=!messages.size;
 function rawLink(ref){
- const a=node("a",ref.file.split("/").slice(-2,-1)[0]+" ["+ref.record_index+"]");
- a.href="../"+ref.file;a.target="_blank";a.rel="noopener";return a
+ const parts=ref.file.split("/"),position="["+ref.record_index+"]"+(ref.event_index==null?"":".events["+ref.event_index+"]");
+ const a=node("a",parts.slice(-2,-1)[0]+" · "+parts[parts.length-1].slice(0,12)+"… "+position);
+ a.href="../"+ref.file;a.target="_blank";a.rel="noopener";a.title=ref.file+(ref.sha256?" · SHA-256 "+ref.sha256:"");return a
 }
+function referenceList(references){
+ const list=node("ul");for(const ref of references){const item=node("li");item.append(rawLink(ref));list.append(item)}return list
+}
+function observationReferences(observation){return observation.evidence_references||[observation.evidence]}
 function chooseMessage(id){
  messageSelect.value=id;
  const panel=el("message-info");panel.replaceChildren();
@@ -55,8 +65,9 @@ function chooseMessage(id){
   panel.append(node("p",[m.network_message_id,...m.internet_message_ids,m.recipient].join(" · ")));
   for(const u of m.urls)panel.append(node("div","URL in message · "+(u.Url||"unavailable")+(u.UrlLocation?" · "+u.UrlLocation:"")));
   for(const f of m.attachments)panel.append(node("div",["Attachment",f.FileName,f.SHA256||f.SHA1,f.ThreatTypes].filter(Boolean).join(" · ")));
-  const detail=node("details"),list=node("ul");detail.append(node("summary",m.observations.length+" linked observations"));
-  for(const o of m.observations){const item=node("li",fmt(o.utc)+" · "+o.operation+" · ");item.append(rawLink(o.evidence));list.append(item)}
+  const detail=node("details"),list=node("ul"),count=m.observations.reduce((total,o)=>total+observationReferences(o).length,0);
+  detail.append(node("summary",m.observations.length+" linked observations · "+referenceLabel(count)));
+  for(const o of m.observations){const item=node("li",fmt(o.utc)+" · "+o.operation);item.append(referenceList(observationReferences(o)));list.append(item)}
   detail.append(list);panel.append(detail)
  }
  el("all-events").disabled=!m;resetPage()
@@ -66,13 +77,13 @@ messageSelect.onchange=()=>chooseMessage(messageSelect.value);
 el("all-events").onclick=()=>chooseMessage("");
 function resetPage(){page=0;render()}
 for(const [key,title] of cols){const th=node("th");const b=node("button",title);b.onclick=()=>{asc=sortKey===key?!asc:true;sortKey=key;resetPage()};th.append(b);el("head").append(th)}
-function evidence(r){const d=node("details");d.append(node("summary",r.count+" record"+(r.count===1?"":"s")));d.ontoggle=()=>{if(!d.open||d.children.length>1)return;
+function evidence(r){const d=node("details");d.append(node("summary",r.count+" event"+(r.count===1?"":"s")+" · "+referenceLabel(r.evidence_reference.length)));d.ontoggle=()=>{if(!d.open||d.children.length>1)return;
  if(r.count>1)d.append(node("small","Through "+fmt(r.end_utc)));
  if(r.reason.length)d.append(node("p",r.reason.join(" · ")));if(r.folders.length)d.append(node("p","Folders: "+r.folders.join(", ")));if(r.messages.length)d.append(node("p","Message IDs: "+r.messages.join(", ")));
  for(const [key,value] of Object.entries(r.defender))d.append(node("div",key+" · "+value));
  for(const [key,value] of Object.entries(r.workspace))d.append(node("div",key+" · "+(typeof value==="object"?JSON.stringify(value):value)));
  for(const note of r.link_notes)d.append(node("div",note));
- for(const ref of r.evidence_reference){const x=node("div");const position="["+ref.record_index+"]"+(ref.event_index==null?"":".events["+ref.event_index+"]");const a=node("a",ref.file.split("/").pop().slice(0,12)+"… "+position);a.href="../"+ref.file;a.target="_blank";a.rel="noopener";x.append(a,node("small",ref.event_id));d.append(x)}
+ for(const ref of r.evidence_reference){const x=node("div");x.append(rawLink(ref),node("small",ref.event_id));d.append(x)}
  if(r.findings.length)d.append(node("small",r.findings.join(" · ")))};
  return d}
 function render(){const term=el("search").value.trim().toLowerCase();let rows=data[el("view").value].filter(r=>(!messageSelect.value||r.message_links.includes(messageSelect.value))&&fields.every(([k])=>!filters[k].value||r[k]===filters[k].value)&&(!term||JSON.stringify(r).toLowerCase().includes(term)||r.message_links.some(id=>messageTerms.get(id).includes(term))));

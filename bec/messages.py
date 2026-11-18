@@ -1,6 +1,7 @@
 """Exact message links between Defender hunting, Exchange trace and mailbox evidence."""
 from collections import defaultdict
 
+from .evidence import evidence_references
 from .storage import digest, encode
 
 
@@ -103,7 +104,8 @@ def correlate_messages(events):
             elif source == "ual":
                 mailbox_ids.append(event["event_id"])
             obs = dict(event_id=event["event_id"], source=source, utc=event["timestamp_utc"],
-                       operation=event["operation"], result=event["result"], evidence=event["evidence"])
+                       operation=event["operation"], result=event["result"], evidence=event["evidence"],
+                       evidence_references=evidence_references(event))
             if source == "ual":
                 obs["mailbox"] = event["entities"]["mailbox"]
                 obs["actor"] = event["actor"]["user"]
@@ -125,7 +127,8 @@ def correlate_messages(events):
                 join={"network_message_id": nid, "recipient": recipient, "internet_message_id": sorted(internet_ids),
                       "mailboxes": sorted({addr for o in observations for addr in o.get("mailbox", [])})},
                 assessment="Contextual", confidence="High", event_ids=[o["event_id"] for o in observations],
-                evidence=[o["evidence"] for o in observations]))
+                evidence=[o["evidence"] for o in observations],
+                event_evidence=[dict(event_id=e["event_id"], references=evidence_references(e)) for e in ordered]))
             for event in ordered:
                 event["finding_ids"].append(fid)
                 if event["assessment"] == "Unknown":

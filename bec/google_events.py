@@ -3,6 +3,7 @@ from collections import defaultdict
 from dataclasses import asdict
 from datetime import timedelta
 
+from .evidence import evidence_references
 from .normalize import Event, address, canonical_ip, values
 from .storage import CaseError, digest, encode, iso, timestamp
 
@@ -146,7 +147,8 @@ def correlations(events):
         fid = "F-" + digest(encode([rule, ids]))[:16]
         findings.append(dict(id=fid, rule=rule, tenant=chain[0]["tenant_id"], observation=label,
                              join=join, confidence="High", assessment="Contextual", event_ids=ids,
-                             evidence=[e["evidence"] for e in chain]))
+                             evidence=[e["evidence"] for e in chain],
+                             event_evidence=[dict(event_id=e["event_id"], references=evidence_references(e)) for e in chain]))
         for e in chain:
             e["finding_ids"].append(fid)
             if e["assessment"] == "Unknown":

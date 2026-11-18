@@ -1,5 +1,13 @@
 # Mailbox-state companion validation
 
+## Evidence-fidelity release candidate compatibility, 2026-11-17
+
+The candidate starts from public BEC `2d9f59dbe388d54e5243b1dc004e9ede9d0705f7` (0.9.0). This compatibility note adds no new producer or live validation result; the historical execution records below are unchanged.
+
+The retained v1 [contract](mailbox-state.md) and [independent BEC fixtures](../tests/test_mailbox_state.py) cover **3/3 BEC source groups**: `inbox_rules`, `forwarding`, and `delegates`. The [recorded producer check below](#windows-offline-stabilization-2026-11-17) covers **one synthetic export with five objects**: one rule, one whole mailbox/forwarding object, and three delegate wrappers. The broader Flapjacks producer-mapping denominator remains unassessed. These BEC counts do not establish broader producer mapping, live acceptance or publication acceptance.
+
+The next gate is to retain and run the v1 regression tests against the candidate, with results recorded separately. Independent producer acceptance is a separate, explicitly authorized check before operational reliance, not a required companion handoff. The literal `response-menu.mailbox-snapshot.v1` remains accepted; no schema rename, existing companion/report migration, overwrite, deletion or producer dependency is required.
+
 ## Windows offline stabilization, 2026-11-17
 
 Starting source: `85e3f0bde4c7c4e190f8b1df5b04a4dec9148e74`, which already includes the companion commands. Review found no production-code change needed for the documented v1 export. The initial Windows focused run exposed a test-only symlink privilege assumption (`WinError 1314`). Link-metadata refusal is now tested independently; actual source-file symlink creation has a separate capability-gated test.
