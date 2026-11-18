@@ -1,7 +1,9 @@
 """Acquisition checkpoints and immutable raw-byte replay."""
 import json
+from collections.abc import Mapping
 from pathlib import Path
 
+from .evidence import evidence_references
 from .graph import Graph, SourceError, fetch
 from .hunting import HuntingPage, TABLES
 from .normalize import event_time, normalize, records, ual_body
@@ -89,6 +91,8 @@ class Collection:
 
     def import_bundle(self, path):
         bundle = read(path)
+        if not isinstance(bundle, Mapping):
+            raise CaseError("Bundle manifest must be a JSON object.")
         if bundle.get("tenant") != self.case.tenant or bundle.get("directory_id") != self.case.meta["directory_id"]:
             raise CaseError("Bundle tenant binding differs from the case profile.")
         customer = (self.case.meta.get("google_workspace") or {}).get("customer_id")
@@ -216,4 +220,7 @@ def replay(case):
                     old.setdefault("additional_evidence", []).append(e["evidence"])
                 else:
                     events[e["event_id"]] = e
+    for event in events.values():
+        if "additional_evidence" in event:
+            event["additional_evidence"] = evidence_references(event, include_primary=False)
     return sorted(events.values(), key=lambda e: (e["timestamp_utc"], e["event_id"])), gaps

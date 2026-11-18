@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 from .analysis import correlate, graph, scope, score
 from .collection import replay
+from .evidence import evidence_references
 from .messages import correlate_messages
 from .google_events import correlations as workspace_correlations
 from .storage import DATA, atomic, now, read, save, timestamp
@@ -34,7 +35,7 @@ def timeline_row(group, zone):
     first, last = group[0], group[-1]
     unique = lambda seq: list(dict.fromkeys(seq))
     reasons = unique(r["reason"] for e in group for r in e["reasons"])
-    refs = [dict(event_id=e["event_id"], **e["evidence"]) for e in group]
+    refs = [dict(event_id=e["event_id"], **ref) for e in group for ref in evidence_references(e)]
     when = timestamp(first["timestamp_utc"]).astimezone(zone)
     return dict(tenant=first["tenant_id"], timestamp_utc=first["timestamp_utc"],
                 timestamp_local=when.isoformat(timespec="seconds") + " " + when.tzname(),
@@ -142,6 +143,7 @@ def timesketch(case):
             rows.append(json.dumps(dict(datetime=e["timestamp_utc"], message=e["operation"],
                 timestamp_desc=e["dataset"], tenant=e["tenant_id"], event_id=e["event_id"],
                 actor=e["actor"]["user"], source_ip=e["network"]["src_ip"], evidence=e["evidence"],
+                evidence_references=evidence_references(e),
                 message_links=e.get("message_links", []), defender=e.get("defender", {}), workspace=e.get("workspace", {}))))
     atomic(path, "".join(s + "\n" for s in rows).encode())
     return path
