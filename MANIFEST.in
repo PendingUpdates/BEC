@@ -1,0 +1,5 @@
+include LICENSE README.md
+recursive-include docs *.md *.gif *.webp
+recursive-include config *.json
+include scripts/validate_lab.py scripts/lab-excluded-rows.sha256
+prune tests

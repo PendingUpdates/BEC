@@ -9,7 +9,7 @@ bec snapshot-import /path/to/bound-case /path/to/export.json --output /path/to/n
 bec snapshot-view /path/to/bound-case /path/to/new-companion
 ```
 
-The case must have an exact native Microsoft directory GUID and the same lowercase primary mailbox UPN as the export. Unbound cases are refused, including demo cases. Create a separate explicitly bound synthetic case for testing. Synthetic is an exporter-supplied marker, not a proof of origin.
+The case must have an exact native Microsoft directory GUID and the same lowercase primary mailbox UPN as the export. An import requires a bound case. BEC preserves the exporter’s original `synthetic` provenance flag.
 
 The accepted contract is `response-menu.mailbox-snapshot.v1`, with exactly these top-level fields: `schema`, `tenant_id` (GUID), `mailbox_upn` (lowercase UPN), `acquired_at` (ISO UTC), `synthetic` (boolean), `evidence_class` (`reserialized-source-objects`), and `sources`. Sources must contain `inbox_rules`, `forwarding`, and `delegates`; each has `status` (`collected`, `partial`, `denied`, or `unavailable`) and an array of opaque record objects. Denied/unavailable sources must have empty arrays. Delegate wrapper objects retain their producer source label and original object unchanged. No assumption is made about rule enabled state or maliciousness.
 

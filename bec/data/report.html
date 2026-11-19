@@ -21,6 +21,7 @@ function fmt(utc){return utc.replace("T"," ").replace(/\.0+Z$/,"Z")}
 function referenceLabel(count){return count+" source reference"+(count===1?"":"s")}
 el("identity").textContent=[s.tenant,s.user,s.case_id].join("  /  ");
 el("window").textContent=fmt(s.start)+"  →  "+fmt(s.end);
+if(s.collection_scope)el("window").append(" · "+s.collection_scope);
 for(const [value,title] of [[s.event_count,"events"],[s.investigation_rows,"investigation rows"],[s.findings,"findings"],[s.mailbox_message_matches,"mailbox/message matches"],[s.gaps,"telemetry gaps"]]){
  const d=node("span");d.append(node("b",value)," "+title);el("metrics").append(d)}
 el("gap-title").textContent="Telemetry gaps ("+s.gaps+")";

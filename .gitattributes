@@ -1,0 +1,6 @@
+tests export-ignore
+.codex export-ignore
+.github export-ignore
+AGENTS.md export-ignore
+agents export-ignore
+scripts/installed_smoke.py export-ignore

@@ -32,11 +32,21 @@ class NoRedirect(HTTPRedirectHandler):
 
 
 class Graph:
-    def __init__(self, case):
+    session = None
+
+    def __init__(self, case, session=None):
         if not case.meta["directory_id"]:
             raise CaseError("Live collection requires a case created with a Microsoft tenant profile.")
         self.case = case
         self.opener = build_opener(NoRedirect)
+        if case.meta.get("microsoft_auth") == "delegated":
+            if (session is None or session.directory_id != case.meta["directory_id"]
+                    or session.client_id != case.meta["client_id"]):
+                raise CaseError("This case requires a Microsoft sign-in for its original tenant and application.")
+            self.session = session
+            return
+        if session is not None:
+            raise CaseError("This case was not created for investigator sign-in.")
         try:
             from azure.identity import CertificateCredential, ClientSecretCredential
         except ImportError as exc:
@@ -57,10 +67,13 @@ class Graph:
         hunt = parsed.path == hunting.ENDPOINT
         repeatable = body is None or hunt
         for attempt in range(5):
-            try:
-                token = self.credential.get_token(ROOT + "/.default").token
-            except Exception as exc:
-                raise SourceError("Graph authentication failed. Check the tenant, application and credential.") from exc
+            if self.session is not None:
+                token = self.session.access_token()
+            else:
+                try:
+                    token = self.credential.get_token(ROOT + "/.default").token
+                except Exception as exc:
+                    raise SourceError("Graph authentication failed. Check the tenant, application and credential.") from exc
             req = Request(url, data=json.dumps(body).encode() if body is not None else None,
                           headers={"Authorization": "Bearer " + token, "Content-Type": "application/json; charset=utf-8",
                                    "Accept": "application/json"})
@@ -71,7 +84,7 @@ class Graph:
                 code = exc.code
                 exc.close()
                 if code not in (429, 500, 502, 503, 504) or (not repeatable and code != 429):
-                    guidance = {403: "check application consent, workload provisioning and licensing",
+                    guidance = {403: "check consent, investigator or application access, workload provisioning and licensing",
                                 401: "check tenant authentication", 400: "query rejected by this API",
                                 404: "resource or endpoint unavailable"}
                     raise SourceError(f"Graph HTTP {code}: {guidance.get(code, 'request failed')}.") from exc

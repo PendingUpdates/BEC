@@ -40,6 +40,6 @@ Comparison regressions cover reordered rows and duplicate copies; equivalent who
 
 The previous v0.6.0 release passed 40 tests in a fresh Windows environment with the `live` extra, and its base wheel demo produced 30 incident events with zero gaps and successful raw verification without optional authentication libraries. Historical baseline results do not replace acceptance for the current release.
 
-The full suite uses synthetic fixtures and mocked provider exchanges. Install `.[live]` before running it because provider transport tests import optional SDK types; no live credentials are needed. This prerequisite does not apply to the base demo or export-only investigations.
+The full suite uses synthetic fixtures and mocked provider exchanges. Install `.[live]` before running it because provider transport tests import optional SDK types; no live credentials are needed. The base package supports export-only investigations.
 
 The installed-wheel smoke test uses Python isolated mode from a temporary working directory, so source-checkout imports cannot supply missing package files. Each GitHub CI job installs and tests only this repository. Offline results do not establish live authentication, permissions, licensing, retention, or provider availability.

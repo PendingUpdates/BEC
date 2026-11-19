@@ -1,6 +1,6 @@
 # E2 live lab validation
 
-The repository includes an explicit-target acceptance runner at `scripts/validate_lab.py`. It uses the installed standalone BEC package and existing commands. It does not generate activity, change permissions, remediate accounts, run arbitrary queries, or create connectors. Offline tests and the synthetic demo remain E1 checks; they do not qualify a live tenant.
+The repository includes an explicit-target acceptance runner at `scripts/validate_lab.py`. It uses the installed standalone BEC package and existing commands. It does not generate activity, change permissions, remediate accounts, run arbitrary queries, or create connectors. The installer and command checks establish local availability. Provider acceptance requires the authorized tenant procedure below.
 
 **Current E2 status: not executed.** No designated tenant profile, lab account, expected native event IDs, or incident window has been supplied for this validation. The runner and its offline checker tests are preparation, not a live pass.
 
@@ -15,7 +15,7 @@ Keep the following outside the public checkout:
 5. The selected credential mechanism, supplied through the existing environment variables. Do not put keys, certificates, secrets, or service-account contents into the plan or source repository.
 6. For pagination and permission-failure gates, a source known to paginate and an already-existing restricted-access credential/profile with a known expected 401/403. Missing conditions remain untested. The runner never alters access to manufacture a failure.
 
-Microsoft collection uses the profile's certificate or client-secret application. Workspace uses its delegated reporting service account. Access prerequisites remain in [security.md](security.md) and [workspace.md](workspace.md). This procedure does not claim those external prerequisites have been validated.
+The lab runner uses the profile's certificate or client-secret application for Microsoft collection. Workspace uses its delegated reporting service account. Access prerequisites remain in [security.md](security.md) and [workspace.md](workspace.md). This procedure does not claim those external prerequisites have been validated.
 
 ## Private plan
 
@@ -76,7 +76,7 @@ No secret is a command-line argument. The runner records installed BEC/distribut
 
 | Gate | Required observation |
 | --- | --- |
-| Live origin | Actual runner collection invocation, live collection mode, matching native bindings/account, provider collector labels, collection timestamps inside the execution interval, and no known packaged fixture rows. Export/demo evidence is rejected. |
+| Live origin | Actual runner collection invocation, live collection mode, matching native bindings/account, provider collector labels, collection timestamps inside the execution interval, and no rows matching the retained legacy sample fingerprints. Exported or known sample evidence is rejected. |
 | Integrity | Original manifest/raw hashes, inventory, and identity checks pass using the read-only saved-case verifier. |
 | Source coverage | Every declared required source has completed query statuses. A permission or parsing gap cannot silently qualify a required available source. |
 | Known activity | Each exact native ID, dataset, event type, and actor appears inside the declared window, with original file/hash/record references retained. |

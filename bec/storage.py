@@ -117,7 +117,7 @@ def microsoft_enabled(case):
     return case.meta.get("microsoft", True)
 
 
-def create(root, tenant, user, start, end, profile=None):
+def create(root, tenant, user, start, end, profile=None, *, delegated=False):
     if not LABEL.fullmatch(tenant) or tenant.upper() in RESERVED:
         raise CaseError("Invalid tenant alias.")
     start, end = timestamp(start), timestamp(end)
@@ -136,12 +136,15 @@ def create(root, tenant, user, start, end, profile=None):
     microsoft = p.get("microsoft", bool(directory_id) or not google)
     if type(microsoft) is not bool or not (microsoft or google):
         raise CaseError("Enable at least one provider using a valid tenant profile.")
+    if delegated and (not directory_id or not microsoft or google):
+        raise CaseError("Investigator sign-in requires a Microsoft-only case bound to its directory.")
     case_id = f"INC-{datetime.now(UTC).year}-{uuid.uuid4().hex[:12]}"
     path = root / tenant / case_id
     path.mkdir(parents=True)
     save(path / "case.json", dict(version=__version__, id=case_id, tenant=tenant, user=user,
          start=iso(start), end=iso(end), created=now(), directory_id=directory_id, client_id=client_id,
-         microsoft=microsoft, google_workspace=google, options=cfg))
+         microsoft=microsoft, google_workspace=google, options=cfg,
+         **({"microsoft_auth": "delegated"} if delegated else {})))
     save(path / "evidence_manifest.json", dict(case_id=case_id, tenant=tenant, artifacts=[]))
     return Case(path)
 
@@ -157,10 +160,13 @@ class Case:
         self.options = self.meta["options"]
 
     @classmethod
-    def find(cls, root, case_id):
+    def find(cls, root, case_id, *, other_root=None):
         if not CASE_ID.fullmatch(case_id):
             raise CaseError("Invalid case ID.")
-        matches = list(root.glob("*/" + case_id + "/case.json"))
+        roots = {root.resolve()}
+        if other_root is not None:
+            roots.add(other_root.resolve())
+        matches = [path for directory in roots for path in directory.glob("*/" + case_id + "/case.json")]
         if len(matches) != 1:
             raise CaseError("Case not found or ambiguous in this case store.")
         return cls(matches[0].parent)
