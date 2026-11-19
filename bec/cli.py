@@ -3,21 +3,24 @@ import argparse
 import ipaddress
 import json
 import os
+import re
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfoNotFoundError
 
 from . import __version__
 from .analysis import scope
 from .collection import Collection, replay
-from .graph import plan
+from .graph import Graph, plan
+from .microsoft_login import sign_in
 from .reporting import report, timesketch
-from .storage import Case, CaseError, DATA, create, read, save, user_address, workspace_profile
+from .storage import Case, CaseError, create, iso, read, save, user_address, workspace_profile
 
 
 def parser():
     p = argparse.ArgumentParser(prog="bec", description="Bacon Egg and Cheese · Microsoft 365, Defender and Google Workspace email compromise investigations")
-    p.add_argument("--root", type=Path, default=Path(os.environ.get("BEC_CASES", "cases")), help="case store")
+    p.add_argument("--root", type=Path, default=os.environ.get("BEC_CASES"), help="case store")
     p.add_argument("--verbose", action="store_true", help="print collection and pivot progress")
     p.add_argument("--version", action="version", version="BEC " + __version__)
     cmd = p.add_subparsers(dest="command", required=True)
@@ -26,7 +29,8 @@ def parser():
     for flag in ("tenant", "user", "start", "end"):
         new.add_argument("--" + flag, required=True)
     new.add_argument("--config", type=Path, help="tenant profile JSON")
-    cmd.add_parser("demo", help="investigate the bundled synthetic case")
+    microsoft = cmd.add_parser("microsoft", help="sign in and investigate one or more Microsoft 365 accounts")
+    microsoft.add_argument("accounts", nargs="*", metavar="ACCOUNT", help="affected email addresses (or enter after sign-in)")
     comparison = cmd.add_parser("compare", help="compare two saved case directories without changing them")
     comparison.add_argument("before", type=Path, help="earlier case directory containing case.json")
     comparison.add_argument("after", type=Path, help="later case directory containing case.json")
@@ -70,6 +74,51 @@ def manual_pivots(case):
     return [tuple(p) for p in read(path)] if path.exists() else []
 
 
+def affected_accounts(values):
+    addresses = []
+    for value in values:
+        for text in re.split(r"[,;\s]+", value.strip()):
+            if not text:
+                continue
+            address = user_address(text)
+            local, domain = address.split("@")
+            labels = domain.split(".")
+            if (any(c in local for c in "*?") or
+                    not all(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", label) for label in labels)):
+                raise CaseError("Enter exact account addresses such as name@company.com. Wildcards are unsupported.")
+            if address not in addresses:
+                addresses.append(address)
+    if not addresses:
+        raise CaseError("Enter at least one affected account address.")
+    return addresses
+
+
+def investigate_accounts(args, root):
+    accounts = affected_accounts(args.accounts) if args.accounts else None
+    with sign_in() as session:
+        print(f"Signed into Microsoft tenant {session.directory_id}.")
+        while accounts is None:
+            try:
+                accounts = affected_accounts([input("Accounts to investigate (separate addresses with commas): ")])
+            except EOFError as exc:
+                raise CaseError("Account entry ended before an address was supplied.") from exc
+            except CaseError as exc:
+                print(str(exc), file=sys.stderr)
+        end = datetime.now(UTC)
+        start, end = iso(end - timedelta(hours=24)), iso(end)
+        print(f"Collecting the last 24 hours, {start} to {end}. Saving cases in {root}.", flush=True)
+        profile = dict(tenant=session.directory_id, directory_id=session.directory_id, client_id=session.client_id,
+                       options=dict(baseline_days=0, max_depth=0, max_users=1))
+        status = 0
+        for account in accounts:
+            case = create(root, session.directory_id, account, start, end, profile, delegated=True)
+            print(f"Collecting {account}. Case {case.id} (resume with bec investigate {case.id}).", flush=True)
+            result = run_case(args, case, session)
+            if result:
+                status = result
+        return status
+
+
 def summarize(case, overview):
     print(f"{case.id}  {case.tenant}  {case.meta['user']}")
     workspace = f"{overview['workspace_matches']} Workspace correlations | " if case.meta.get("google_workspace") else ""
@@ -80,8 +129,8 @@ def summarize(case, overview):
     print(overview["output"])
 
 
-def run_case(args, case):
-    cmd = args.command
+def run_case(args, case, session=None):
+    cmd = "investigate" if args.command == "microsoft" else args.command
     bundle = getattr(args, "bundle", None)
     manual = manual_pivots(case)
     extra = None
@@ -110,7 +159,8 @@ def run_case(args, case):
             bundle=str(bundle) if bundle else None,
             queries=[q.metadata() for q in dry_queries] if active_mode == "live" else [],
             pivots=[dict(kind=k, value=v) for k, v in [extra or primary]],
-            expansion="Evidence-derived IPs, users, user IDs and consented principals within configured limits."),
+            expansion=("Named account only." if case.meta.get("microsoft_auth") == "delegated" else
+                       "Evidence-derived IPs, users, user IDs and consented principals within configured limits.")),
             indent=2))
         return 0
     with case.lock():
@@ -129,6 +179,8 @@ def run_case(args, case):
             case.log("update_providers")
         primary_plan = plan(case, *primary, baseline=True) + plan(case, *primary)
         state = Collection(case)
+        if session is not None:
+            state.graph = Graph(case, session)
         if cmd == "verify":
             print(f"Verified {len(case.manifest()['artifacts'])} raw artifacts for {case.id}.")
             return 0
@@ -144,9 +196,9 @@ def run_case(args, case):
                 state.import_bundle(bundle.resolve())
             elif state.state["mode"] != "export":
                 if args.verbose:
-                    print("Collecting tenant-scoped incident and baseline evidence.", file=sys.stderr)
+                    print("Collecting tenant-scoped evidence.", file=sys.stderr)
                 state.collect(primary_plan)
-                if cmd != "collect":
+                if cmd != "collect" and case.meta.get("microsoft_auth") != "delegated":
                     searched = {primary}
                     # Recompute sharing and scope after each acquisition wave.
                     while True:
@@ -180,8 +232,11 @@ def run_case(args, case):
 
 def main(argv=None):
     args = parser().parse_args(argv)
-    root = args.root.resolve()
+    investigator_root = Path.home() / "BEC-Cases"
+    root = (args.root or (investigator_root if args.command == "microsoft" else Path("cases"))).resolve()
     try:
+        if args.command == "microsoft":
+            return investigate_accounts(args, root)
         if args.command in ("snapshot-import", "snapshot-view"):
             from .mailbox_state import import_snapshot, view_snapshot
             result = (import_snapshot(args.directory, args.snapshot, args.output)
@@ -209,18 +264,17 @@ def main(argv=None):
             case = create(root, args.tenant, args.user, args.start, args.end, cfg)
             print(case.id)
             return 0
-        if args.command == "demo":
-            case = create(root, "TEST", "compromised@example.com", "2026-10-30T12:00Z", "2026-10-31T12:00Z",
-                          dict(tenant="TEST", microsoft=True, google_workspace=dict(customer_id="C02becdemo"),
-                               options=dict(timezone="America/New_York", trusted_networks=["192.0.2.0/24"])))
-            args.command = "investigate"
-            args.bundle = DATA / "demo" / "workspace-bundle.json"
-        else:
-            if args.command == "timeline" and args.case_id == "export-timesketch" and args.export_case:
-                args.case_id = args.export_case
-            elif args.command == "timeline" and args.export_case:
-                raise CaseError("Use bec timeline export-timesketch CASE_ID.")
-            case = Case.find(root, args.case_id)
+        if args.command == "timeline" and args.case_id == "export-timesketch" and args.export_case:
+            args.case_id = args.export_case
+        elif args.command == "timeline" and args.export_case:
+            raise CaseError("Use bec timeline export-timesketch CASE_ID.")
+        case = Case.find(root, args.case_id, other_root=investigator_root if args.root is None else None)
+        if case.meta.get("microsoft_auth") == "delegated" and args.command in ("collect", "investigate", "pivot"):
+            if args.command == "pivot" or args.bundle or args.workspace_config:
+                raise CaseError("This Microsoft sign-in case collects only its named account. Create a separate case for a new target or source.")
+            if not args.dry_run:
+                with sign_in(case.meta["client_id"], case.meta["directory_id"]) as session:
+                    return run_case(args, case, session)
         return run_case(args, case)
     except (CaseError, OSError, ValueError, KeyError, TypeError, ZoneInfoNotFoundError) as exc:
         print(f"BEC: {exc}", file=sys.stderr)

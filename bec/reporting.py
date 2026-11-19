@@ -92,7 +92,8 @@ def report(case, manual=None):
     gaps = [*summary.get("gaps", []), *gaps]
     if not summary:
         gaps.append(dict(dataset="all", reason="No collection performed."))
-    if not baseline.get(case.meta["user"]):
+    account_only = case.meta.get("microsoft_auth") == "delegated"
+    if not account_only and not baseline.get(case.meta["user"]):
         gaps.append(dict(dataset="baseline", reason="No earlier successful sign-ins for the primary user."))
     elif (case.meta.get("google_workspace") and case.options["baseline_days"] and
           "workspace/" + case.meta["user"] not in known):
@@ -111,6 +112,8 @@ def report(case, manual=None):
                     workspace_matches=len(workspace_findings),
                     source_counts=dict(Counter(e["dataset"] for e in events)),
                     baseline_successes=dict(baseline), output=str(root / "timeline" / "timeline.html"))
+    if account_only:
+        overview["collection_scope"] = "Named account and related email evidence. Historical baseline excluded."
     save(root / "analysis_summary.json", overview)
     save(root / "telemetry_gaps.json", gaps)
     save(root / "entities" / "graph.json", graph_obj)

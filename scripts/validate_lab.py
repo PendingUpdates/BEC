@@ -10,10 +10,9 @@ from types import SimpleNamespace
 import uuid
 
 from bec import __version__
-from bec.comparison import Snapshot, _canonical_record, compare
+from bec.comparison import Snapshot, compare
 from bec.graph import plan as query_plan
-from bec.normalize import records
-from bec.storage import (CASE_ID, DATA, DATASETS, GOOGLE_APPS, LABEL, RESERVED, CaseError, digest, encode,
+from bec.storage import (CASE_ID, GOOGLE_APPS, LABEL, RESERVED, CaseError, digest, encode,
                          iso, read, save, settings, timestamp, user_address, workspace_profile)
 
 
@@ -150,16 +149,11 @@ def credential_environment(target):
 
 
 def fixture_fingerprints():
-    fingerprints = set()
-    sources = {(dataset, DATA / "demo" / (dataset + ".json")) for dataset in DATASETS}
-    for name in ("bundle.json", "defender-bundle.json", "workspace-bundle.json"):
-        for entry in read(DATA / "demo" / name)["files"]:
-            sources.add((entry["dataset"], DATA / "demo" / entry["path"]))
-    for dataset, path in sources:
-        if path.is_file():
-            for row in records(path.read_bytes(), dataset):
-                fingerprints.add(digest(encode(dict(dataset=dataset, record=_canonical_record(dataset, row)))))
-    return fingerprints
+    # Preserve the original qualification exclusions without distributing the sample records.
+    text = Path(__file__).with_name("lab-excluded-rows.sha256").read_text(encoding="ascii")
+    if digest(text.encode("ascii")) != "f0a7ec07e8aba1475224d577b3d9829f499a5d8c170145f715f5590bb4fc8a24":
+        raise CaseError("The lab evidence exclusion list is missing entries or has changed.")
+    return set(text.splitlines())
 
 
 def assess(case_directory, target, user, receipt):

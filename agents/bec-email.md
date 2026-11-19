@@ -23,7 +23,7 @@ bec/reporting.py            offline reports and timeline exports
 bec/comparison.py           read-only saved-case evidence comparison
 bec/search.py               exact typed read-only indicator lookup
 bec/mailbox_state.py        offline current-state companion import/view
-bec/data/                   report/rule resources and synthetic fixtures
+bec/data/                   report template and rule data
 bec/__init__.py
 bec/__main__.py
 tests/
@@ -50,7 +50,7 @@ BEC supports account compromise investigation through:
 - Defender `EmailEvents`, `EmailUrlInfo`, `EmailAttachmentInfo`, `UrlClickEvents`, `EmailPostDeliveryEvents`, and `AlertEvidence`, scoped to case accounts and message identifiers.
 - Workspace `login`, `token`, and `gmail` audit reports, including supporting identity/OAuth correlation.
 
-The command surface is `case create`, `demo`, `collect`, `investigate`, `analyze`, `report`, `pivot ip|user`, `timeline`, `verify`, `evidence`, `compare`, `search`, `snapshot-import`, and `snapshot-view`. Global `--root` and `--verbose` precede the command. `collect` and `investigate` accept `--bundle`, `--dry-run`, `--defender`, and `--workspace-config`. `compare` accepts two explicit saved-case directories; `search` accepts one directory, a supported indicator type, and its value. Both accept optional `--format json|html` / `--output FILE` and do not use `--root`. Snapshot commands accept an explicit bound case directory and either an exported v1 snapshot or imported companion directory; import also requires a new `--output` directory outside the case. The installed `bec` console script and `python -m bec` invoke the same package entry point.
+The command surface is `case create`, `microsoft`, `collect`, `investigate`, `analyze`, `report`, `pivot ip|user`, `timeline`, `verify`, `evidence`, `compare`, `search`, `snapshot-import`, and `snapshot-view`. Global `--root` and `--verbose` precede the command. `collect` and `investigate` accept `--bundle`, `--dry-run`, `--defender`, and `--workspace-config`. `compare` accepts two explicit saved-case directories; `search` accepts one directory, a supported indicator type, and its value. Both accept optional `--format json|html` / `--output FILE` and do not use `--root`. Snapshot commands accept an explicit bound case directory and either an exported v1 snapshot or imported companion directory; import also requires a new `--output` directory outside the case. The installed `bec` console script and `python -m bec` invoke the same package entry point.
 
 Prohibited scope includes device-agent provisioning, endpoint telemetry, ransomware exercises, disk/RAM capture, image custody, arbitrary hunting-query execution, and unrequested containment or account/mailbox remediation. Do not import or depend on a sibling IR package to implement BEC. Reject requests to disguise those capabilities as email commands; route them to their separate project owner.
 
@@ -62,7 +62,7 @@ Outputs are preserved raw vendor bytes with SHA-256 manifests, collection checkp
 
 Preserve stdout/stderr and statuses: `0` completed, `2` completed with telemetry gaps or parser usage error, `1` runtime error, `130` interruption. `case create` prints only its ID on success; `evidence` remains valid JSON. Dry runs do not acquire evidence or persist requested provider changes. Resume completed queries and retry incomplete ones without silently changing export/live mode.
 
-The distribution is `bacon-egg-and-cheese`, Python package `bec`, console `bec`. Keep project and package versions aligned and include the owned templates, rule data, and demo fixtures in distributions. A clean installation must not resolve code or data from another checkout. Combined Windows/image cases are not a supported migration input; retain the original case and transfer cloud records through a compatible bundle instead.
+The distribution is `bacon-egg-and-cheese`, Python package `bec`, console `bec`. Keep project and package versions aligned and include the owned templates and rule data in distributions. Keep developer fixture archives outside published artifacts. A clean installation must not resolve code or data from another checkout. Combined Windows/image cases are not a supported migration input; retain the original case and transfer cloud records through a compatible bundle instead.
 
 Saved-case comparison must verify original raw evidence read-only, refuse tenant/native-customer mismatches, retain different content sharing a native identity, and make coverage/window differences explicit. Identical/reordered rows do not become additions. Absence never means deleted configuration. Do not use `Case.verify()` for this read-only path because it can recover pending transactions and change the source case. Comparison output must be a new file outside both cases. Successful comparison returns `0` even with evidence differences or documented source coverage gaps; invalid inputs return `1`.
 
@@ -72,10 +72,10 @@ Mailbox-state companions preserve exact imported bytes, native tenant/mailbox bi
 
 ## Validation
 
-1. Reproduce the issue or identify the exact contract being changed using offline fixtures and mocked provider exchanges.
-2. Install test prerequisites into the selected environment with `python -m pip install ".[live]"`. Provider transport tests import optional SDK exception types even though their exchanges are mocked and no credentials are required. Run the focused test file, for example `python -m unittest discover -s tests -p test_workspace.py -v`.
-3. For command, collection, analysis, reporting, or packaging changes, run `python -m unittest discover -s tests -v` from this repository root after installing those optional dependencies. Use the equivalent RTK test wrapper when available. Do not substitute an old baseline for the current run.
-4. For packaging or entrypoint changes, install the base package into a clean environment, run `bec --version` and `python -m bec --help`, then execute `bec --root TEMPORARY_PATH demo` from outside the checkout. The base install and demo must work without optional authentication libraries. Verify the generated case and replay/timeline outputs. Add the `live` extra before running the full suite in that environment. Coordinate this with the integration owner if they already own isolated installation checks.
+1. Identify the changed contract. Use the test coverage authorized for the current pass.
+2. Keep the archived QA harness and its data outside the public Git tree and every distribution.
+3. Check syntax, package contents and normal command discovery before handoff. Report the actual platform, commands and results.
+4. For packaging or entry point changes, verify installed command help, version, template and rule availability outside the checkout using `scripts/installed_smoke.py`. Check release archive contents. Provider acceptance requires an explicitly authorized operator.
 5. Confirm endpoint/image commands remain unavailable and no sibling package/runtime is required. Keep the test store outside the repository. Inspect the final diff and intended publication files for credentials, client data, binaries, or generated cases.
 
 Provider authentication, permissions, licensing, retention, and delayed ingestion need a separately authorized live check. Record that limitation instead of claiming fixture tests verify tenant behavior. Do not broaden successful testing without a new change or concrete unresolved risk.

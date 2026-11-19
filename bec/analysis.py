@@ -72,6 +72,7 @@ def scope(case, events, manual=None):
     """Breadth-first pivot with typed identifiers. Never pivot on an SMTP relay address."""
     cfg = case.options
     seed = ("user", case.meta["user"])
+    account_only = case.meta.get("microsoft_auth") == "delegated"
     networks = [ipaddress.ip_network(c) for c in cfg["trusted_networks"]]
     index, users_by_ip = index_scope(events, case)
     known, counts = build_baseline(events, case)
@@ -83,7 +84,7 @@ def scope(case, events, manual=None):
                 historical_ids[e["actor"]["user"]][uid] = e["event_id"]
     queue = deque([(seed, 0, None)])
     seen, accepted, selected, history = {seed}, [], {}, []
-    for entity in manual or []:
+    for entity in ([] if account_only else manual or []):
         if entity not in seen:
             queue.append((entity, 0, None))
             seen.add(entity)
@@ -110,6 +111,9 @@ def scope(case, events, manual=None):
             continue
         accepted.append(entity)
         used[kind] += 1
+        if account_only:
+            selected.update((event["event_id"], event) for event in index[entity])
+            continue
         if kind == "user":
             for uid, evidence_id in historical_ids[value].items():
                 other = ("user_id", uid)
