@@ -1,4 +1,6 @@
-# E2 live lab validation
+# Historical E2 lab validation
+
+Microsoft Graph live execution in this runner is retired. Preflight remains available for historical plans. Only separately authorized Workspace-only plans retain live execution here. [Current Microsoft operator guide](investigations.md)
 
 The repository includes an explicit-target acceptance runner at `scripts/validate_lab.py`. It uses the installed standalone BEC package and existing commands. It does not generate activity, change permissions, remediate accounts, run arbitrary queries, or create connectors. The installer and command checks establish local availability. Provider acceptance requires the authorized tenant procedure below.
 
@@ -70,7 +72,7 @@ Once the target is explicitly authorized, configure only the selected credential
 .\.venv\Scripts\python.exe -I scripts\validate_lab.py run --plan C:\IR\private\lab-plan.json --run-dir C:\IR\private\bec-lab-run-01
 ```
 
-No secret is a command-line argument. The runner records installed BEC/distribution versions, Python/module locations, exact command arguments, and actual return codes privately. It uses `python -I -m bec` for case creation, collection, verification, and local analysis. Purview collection may create read-only audit search jobs, as the existing collector already does.
+No secret is a command-line argument. The runner records installed BEC/distribution versions, Python/module locations, exact command arguments, and actual return codes privately. It uses `python -I -m bec` for case creation, collection, verification, and local analysis. The historical Microsoft collector created tenant-side search jobs. The current adapter reads the audit log with a bounded cmdlet query.
 
 ## Acceptance gates
 

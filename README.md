@@ -2,33 +2,30 @@
 
 ![BEC email investigation](docs/assets/BEC-Banner.gif)
 
-BEC investigates business email compromise in Microsoft 365 and Google Workspace. It builds an account timeline from available logs and links findings to their original evidence. You can also investigate exported logs or search and compare saved cases offline.
+BEC is a command-line tool for investigating business email compromise. For Microsoft 365, an analyst uses their own authorized Exchange Online PowerShell session to read message traces and mailbox audit events for named accounts. Python builds a local timeline and links findings to the saved evidence. BEC can also analyze existing Microsoft, Defender email and Google Workspace exports.
 
-Setup guides for [Windows](docs/prerequisites.md#windows), [macOS](docs/prerequisites.md#macos), and [Ubuntu](docs/prerequisites.md#ubuntu).
+## First investigation on Windows
 
-## First Microsoft investigation on Windows
-
-1. Open the BEC repository on GitHub, select the **main** branch, then choose **Code → Download ZIP**. [PendingUpdates/BEC on GitHub](https://github.com/PendingUpdates/BEC)
-
-2. In File Explorer, right-click the downloaded ZIP and choose **Extract All**. Open the extracted folder containing `pyproject.toml`. Click the address bar, type `powershell`, and press Enter. Run `py -3 --version`. Continue when it reports **Python 3.12 or newer**. [Windows Python setup](docs/prerequisites.md#windows)
-
-3. Install BEC and its live collection libraries in that folder.
+1. On the **main** branch of the [BEC repository](https://github.com/PendingUpdates/BEC), select **Code → Download ZIP**. In File Explorer, right-click the ZIP, choose **Extract All** and open the extracted folder containing `pyproject.toml` and `Invoke-BEC.ps1`.
+2. Open PowerShell in that folder. For ExchangeOnlineManagement **3.10 or later**, use **PowerShell 7.6 or later**. Module versions **3.7.0 through 3.9.2** support **PowerShell 7.4 or later**. Check `py -3 --version` for **Python 3.12 or later**, then install the base package. [Platform setup and package contents](docs/prerequisites.md#windows)
 
    ```powershell
    py -3 -m venv .venv
-   .\.venv\Scripts\python.exe -m pip install ".[live]"
+   .\.venv\Scripts\python.exe -m pip install .
    ```
 
-4. Have your administrator confirm that your workstation has the **already approved Entra desktop app** for BEC. Its application ID must be available as `BEC_MICROSOFT_CLIENT_ID`. A single-tenant app also requires `BEC_MICROSOFT_TENANT_ID`. **Stop here if the approved app or a required ID is missing.** [Delegated sign-in setup and permissions](docs/security.md#investigator-sign-in)
-
-5. Start the investigation in the same PowerShell window.
+3. In that same PowerShell window, sign in **as yourself** using your organization's already approved Exchange Online PowerShell access. If you already have a single direct connection to the customer, use it. BEC uses that session without registering an application or changing the tenant. If Microsoft asks for new consent, stop. [Microsoft sign-in and supported session types](docs/security.md#investigator-sign-in)
 
    ```powershell
-   .\.venv\Scripts\bec.exe microsoft
+   Connect-ExchangeOnline
    ```
 
-   Sign in through Microsoft with your investigation account. If the displayed tenant is wrong, press Ctrl+C. Otherwise, at `Accounts to investigate (separate addresses with commas):` enter the affected account addresses and press Enter.
+4. Use the **customer tenant ID from the incident record**. Replace the quoted placeholder with its GUID. Run the launcher in the connected window.
 
-BEC collects the preceding 24 hours in UTC and prints a separate HTML report path for each account. Cases default to `BEC-Cases` in your Windows user folder. Each report identifies missing or denied logs.
+   ```powershell
+   .\Invoke-BEC.ps1 -TenantId 'CUSTOMER-TENANT-GUID'
+   ```
 
-For Google Workspace, unattended collection, exported logs and saved-case commands, see the [investigation guide](docs/investigations.md). BEC is distributed under the [MIT License](LICENSE).
+   Check the displayed operator, tenant and UTC window. At **Accounts to investigate**, enter the affected primary email addresses separated by commas. The default window is the preceding 24 hours. BEC prints a local report path per account and lists coverage gaps. Cases default to `BEC-Cases` in your user folder.
+
+[Windows](docs/prerequisites.md#windows) · [macOS](docs/prerequisites.md#macos) · [Ubuntu](docs/prerequisites.md#ubuntu) · [Operator guide and custom windows](docs/investigations.md) · [Offline export fallback](docs/investigations.md#work-with-an-existing-export) · [MIT License](LICENSE)

@@ -92,7 +92,8 @@ def report(case, manual=None):
     gaps = [*summary.get("gaps", []), *gaps]
     if not summary:
         gaps.append(dict(dataset="all", reason="No collection performed."))
-    account_only = case.meta.get("microsoft_auth") == "delegated"
+    account_only = (case.meta.get("collection_scope") == "named_account" or
+                    case.meta.get("microsoft_auth") == "delegated")
     if not account_only and not baseline.get(case.meta["user"]):
         gaps.append(dict(dataset="baseline", reason="No earlier successful sign-ins for the primary user."))
     elif (case.meta.get("google_workspace") and case.options["baseline_days"] and

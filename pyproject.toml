@@ -12,7 +12,7 @@ requires-python = ">=3.12"
 dependencies = ["tzdata>=2024.1; platform_system=='Windows'"]
 
 [project.optional-dependencies]
-live = ["azure-identity>=1.17,<2", "msal>=1.24,<2", "requests>=2.20,<3", "google-auth[requests]>=2.35,<3"]
+live = ["requests>=2.20,<3", "google-auth[requests]>=2.35,<3"]
 
 [project.scripts]
 bec = "bec.cli:main"
@@ -21,4 +21,4 @@ bec = "bec.cli:main"
 include = ["bec", "bec.*"]
 
 [tool.setuptools.package-data]
-bec = ["data/rules.json", "data/report.html"]
+bec = ["data/rules.json", "data/report.html", "data/Invoke-BEC.ps1"]

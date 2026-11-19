@@ -18,7 +18,8 @@ MAX_FILE_BYTES = 128 * 1024 * 1024
 MAX_CASE_BYTES = 512 * 1024 * 1024
 MAX_RECORDS = 1_000_000
 QUERY_FIELDS = ("dataset", "kind", "value", "start", "end", "baseline", "field",
-                "table", "customer_id", "status", "reason", "shared_ip")
+                "table", "customer_id", "status", "reason", "shared_ip", "receipt_sha256",
+                "captured_at", "operator", "connection", "result_limit")
 
 
 def _json(data):
@@ -70,10 +71,12 @@ def _identity(dataset, row, fingerprint):
             return dict(dataset=dataset, basis="workspace_activity", native_id=native)
     elif dataset not in TABLES:
         native = (ual_body(body).get("Id") or body.get("id")) if dataset == "ual" else body.get("id")
+        if dataset == "trace":
+            native = native or body.get("MessageTraceId")
         if isinstance(native, (str, int)) and str(native):
             result = dict(dataset=dataset, basis="native_id", native_id=str(native))
             if dataset == "trace":
-                result["recipient"] = str(body.get("recipientAddress") or "").casefold()
+                result["recipient"] = str(body.get("recipientAddress") or body.get("RecipientAddress") or "").casefold()
             return result
     # Defender ReportId/AlertId can identify several observations, not one row.
     return dict(dataset=dataset, basis="content", native_id=fingerprint)
@@ -129,6 +132,9 @@ class Snapshot:
         manifest = _mapping(_json(self.watch(directory / "evidence_manifest.json")), "manifest")
         if manifest["tenant"] != case.tenant or manifest["case_id"] != case.id:
             raise CaseError("Manifest identity mismatch.")
+        for sha in manifest.get("exchange_receipts", []):
+            if digest(self.watch(case.receipt_path(sha))) != sha:
+                raise CaseError("Exchange receipt verification failed.")
         if not isinstance(manifest.get("artifacts"), list):
             raise CaseError("Comparison manifest artifacts must be an array.")
         state_bytes = self.watch(directory / "collection_summary.json", optional=True)

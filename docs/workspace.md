@@ -1,6 +1,6 @@
 # Google Workspace audit investigation
 
-BEC collects three account-scoped activity reports from the Google Admin SDK. Use a Workspace-only profile for Google investigations or add the Workspace binding to an existing Microsoft case for a combined timeline.
+BEC collects three account-scoped activity reports from the Google Admin SDK. Use a Workspace-only profile for live Google investigations. Already acquired Google and Microsoft exports can share an offline case with both tenant bindings.
 
 ## Configure live access
 
@@ -41,7 +41,7 @@ Use the same case tenant alias, Workspace customer ID and, for a Microsoft-bound
 ```
 
 ```powershell
-.\.venv\Scripts\bec.exe investigate $caseId --workspace-config .\workspace.json --bundle .\exports\bundle.json
+.\.venv\Scripts\bec.exe offline --bundle .\exports\bundle.json --tenant $TenantAlias --google-customer-id $CustomerId --user $AffectedAccount --start $StartUtc --end $EndUtc
 ```
 
 An export case accepts later bundles. A live case resumes from its per-query checkpoints. A failed source is retried on the next investigation. Choose a new live case for a fresh acquisition when provider logs arrive late.

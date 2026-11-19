@@ -81,11 +81,15 @@ def original_time(dataset, row):
         return row.get("Timestamp") or row.get("timestamp")
     if dataset == "ual":
         return row.get("createdDateTime") or ual_body(row).get("CreationTime")
-    return row.get({"trace": "receivedDateTime", "directory": "activityDateTime"}.get(dataset, "createdDateTime"))
+    if dataset == "trace":
+        return row.get("receivedDateTime") or row.get("Received")
+    return row.get("activityDateTime" if dataset == "directory" else "createdDateTime")
 
 
 def event_time(dataset, row):
-    return timestamp(original_time(dataset, row), vendor_utc=dataset == "ual" and not row.get("createdDateTime"))
+    native_utc = (dataset == "ual" and not row.get("createdDateTime") or
+                  dataset == "trace" and "Received" in row and not row.get("receivedDateTime"))
+    return timestamp(original_time(dataset, row), vendor_utc=native_utc)
 
 
 def canonical_ip(value):
@@ -259,13 +263,15 @@ def normalize(tenant, dataset, row, evidence):
         correlation, result = row.get("correlationId"), str(row.get("result") or "unknown").lower()
     elif dataset == "trace":
         source = "exchange"
-        result = str(row.get("status") or "unknown").lower()
+        source_id = source_id or row.get("MessageTraceId")
+        result = str(row.get("status") or row.get("Status") or "unknown").lower()
         kind = "mail.delivery" if result == "delivered" else "mail.trace"
         operation = f"Message trace ({result})"
-        actor, target = row.get("senderAddress"), row.get("recipientAddress")
+        actor = row.get("senderAddress") or row.get("SenderAddress")
+        target = row.get("recipientAddress") or row.get("RecipientAddress")
         users.extend(values(address(target)))
-        ip = row.get("fromIP")
-        messages.extend(values(row.get("messageId")))
+        ip = row.get("fromIP") or row.get("FromIP")
+        messages.extend(values(row.get("messageId") or row.get("MessageId")))
     else:
         raise CaseError("Unknown dataset.")
     actor = address(actor)
