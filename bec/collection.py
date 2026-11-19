@@ -1,20 +1,21 @@
 """Acquisition checkpoints and immutable raw-byte replay."""
 import json
-from collections.abc import Mapping
-from pathlib import Path
 
+from .bundles import ExportBundle
 from .evidence import evidence_references
-from .graph import Graph, SourceError, fetch
-from .hunting import HuntingPage, TABLES
-from .normalize import event_time, normalize, records, ual_body
-from .storage import CaseError, DATASETS, GOOGLE_APPS, digest, encode, iso, now, read, save, microsoft_enabled
-from .workspace import Workspace
+from .hunting import TABLES
+from .normalize import event_time, normalize, object_value, records, ual_body
+from .storage import CaseError, SourceError, DATASETS, GOOGLE_APPS, digest, encode, iso, now, read, save, microsoft_enabled
 from .google_events import normalize_child
 
 
 def check_tenant(case, dataset, rows):
+    check_record_binding(dataset, rows, case.tenant, case.meta["directory_id"],
+                         (case.meta.get("google_workspace") or {}).get("customer_id"))
+
+
+def check_record_binding(dataset, rows, tenant, directory_id, customer):
     if dataset in GOOGLE_APPS:
-        customer = (case.meta.get("google_workspace") or {}).get("customer_id")
         if not customer:
             raise CaseError("Bind a Workspace customer ID before importing Google evidence.")
         for row in rows:
@@ -27,7 +28,7 @@ def check_tenant(case, dataset, rows):
     for row in rows:
         if not isinstance(row, dict):
             continue
-        if "tenant_id" in row and row["tenant_id"] != case.tenant:
+        if "tenant_id" in row and row["tenant_id"] != tenant:
             raise CaseError("Evidence tenant alias differs from the case.")
         ids = [row.get("organizationId"), row.get("OrganizationId"), row.get("AADTenantId")]
         if dataset == "ual":
@@ -36,8 +37,31 @@ def check_tenant(case, dataset, rows):
             except (TypeError, ValueError):
                 pass
         for tid in filter(None, ids):
-            if not case.meta["directory_id"] or str(tid).casefold() != case.meta["directory_id"]:
+            if not directory_id or str(tid).casefold() != directory_id:
                 raise CaseError("The source directory ID must match directory_id in the tenant profile.")
+
+
+def verify_export_files(bundle, tenant, directory_id, customer, microsoft, receipt=None):
+    """Validate the whole input before case writes. Retain only the original-byte hashes."""
+    bundle.check_binding(tenant, directory_id, customer)
+    hashes = {}
+    for dataset, name, path in bundle.files:
+        if dataset not in GOOGLE_APPS and not microsoft:
+            raise CaseError("A Microsoft export is outside this Workspace-only case.")
+        try:
+            raw = path.read_bytes()
+            if not raw.strip():
+                raise CaseError("Empty export file.")
+            rows = records(raw, dataset)
+            checked = rows if dataset in GOOGLE_APPS else (object_value(row) for row in rows)
+            check_record_binding(dataset, checked, tenant, directory_id, customer)
+            if receipt:
+                receipt.check_file(name, raw, rows)
+        except (OSError, ValueError) as exc:
+            reason = str(exc) if isinstance(exc, CaseError) else "Unreadable file or invalid UTF-8 JSON."
+            raise CaseError(f"Invalid export {name}: {reason}") from exc
+        hashes[dataset, name] = digest(raw)
+    return hashes
 
 
 def acquire(case, dataset, raw, collector, query, remaining):
@@ -64,7 +88,8 @@ def acquire(case, dataset, raw, collector, query, remaining):
 
 
 def empty_state(case):
-    return dict(tenant=case.tenant, case_id=case.id, mode=None, queries={}, gaps=[], updated=None)
+    return dict(tenant=case.tenant, case_id=case.id, mode="export" if case.meta.get("export_only") else None,
+                queries={}, gaps=[], updated=None)
 
 
 class Collection:
@@ -74,7 +99,6 @@ class Collection:
         self.state = read(self.path) if self.path.exists() else empty_state(case)
         if self.state["tenant"] != case.tenant or self.state["case_id"] != case.id:
             raise CaseError("Collection summary identity mismatch.")
-        self.graph = None
         self.workspace = None
         self.remaining = case.options["max_events"] - sum(a["records"] for a in case.manifest()["artifacts"])
         self.attempted = set()
@@ -85,37 +109,34 @@ class Collection:
         save(self.path, self.state)
 
     def mode(self, value):
-        if self.state["mode"] not in (None, value):
+        if self.state["mode"] not in (None, value) or (value == "live" and self.case.meta.get("export_only")):
             raise CaseError("Use a separate case for a different acquisition mode.")
         self.state["mode"] = value
 
     def import_bundle(self, path):
-        bundle = read(path)
-        if not isinstance(bundle, Mapping):
-            raise CaseError("Bundle manifest must be a JSON object.")
-        if bundle.get("tenant") != self.case.tenant or bundle.get("directory_id") != self.case.meta["directory_id"]:
-            raise CaseError("Bundle tenant binding differs from the case profile.")
-        customer = (self.case.meta.get("google_workspace") or {}).get("customer_id")
-        if "google_customer_id" in bundle and bundle["google_customer_id"] != customer:
-            raise CaseError("Bundle Workspace customer differs from the case profile.")
-        files = bundle.get("files")
-        if not isinstance(files, list) or not files:
-            raise CaseError("Bundle manifest must list one or more files.")
+        self.import_files(ExportBundle.load(path))
+
+    def import_files(self, bundle, *, verified_hashes=None, receipt=None):
+        bundle.check_binding(self.case.tenant, self.case.meta["directory_id"],
+                             (self.case.meta.get("google_workspace") or {}).get("customer_id"))
         self.mode("export")
+        if verified_hashes is not None:
+            self.update()  # An interrupted import must resume in export mode.
         completed = set()
-        for entry in files:
-            dataset = entry["dataset"]
-            if dataset not in DATASETS:
-                raise CaseError("Unsupported bundle dataset.")
-            local = (path.parent / entry["path"]).resolve()
-            if not local.is_relative_to(path.parent.resolve()):
-                raise CaseError("Bundle source must be inside its manifest directory.")
-            key = f"file:{dataset}:{entry['path']}"
-            query = dict(endpoint="local export", file=entry["path"], start=self.case.meta["start"],
+        if receipt:
+            receipt.preserve(self.case, bundle.raw_manifest)
+        for dataset, name, local in bundle.files:
+            key = f"file:{dataset}:{name}"
+            query = dict(endpoint="local export", file=name, start=self.case.meta["start"],
                          end=self.case.meta["end"], dataset=dataset)
+            if receipt:
+                query.update(receipt.provenance(name))
             try:
                 raw = local.read_bytes()
-                self.remaining -= acquire(self.case, dataset, raw, "export", query, self.remaining)
+                if verified_hashes is not None and digest(raw) != verified_hashes[dataset, name]:
+                    raise SourceError("Export changed after validation. Retry with the intended file.")
+                collector = "exchange_online_powershell" if receipt else "export"
+                self.remaining -= acquire(self.case, dataset, raw, collector, query, self.remaining)
                 self.state["queries"][key] = {**query, "status": "collected", "records": len(records(raw, dataset))}
                 completed.add(dataset)
             except (OSError, UnicodeError, json.JSONDecodeError, SourceError) as exc:
@@ -123,6 +144,8 @@ class Collection:
                 self.state["queries"][key] = {**query, "status": "gap", "reason": reason}
             self.case.log("import", dataset=dataset, status=self.state["queries"][key]["status"])
             self.update()
+            if verified_hashes is not None and self.state["queries"][key]["status"] == "gap":
+                raise CaseError(f"Offline import stopped at {name}: " + self.state["queries"][key]["reason"])
         for dataset in DATASETS:
             if dataset in GOOGLE_APPS and not self.case.meta.get("google_workspace"):
                 continue
@@ -132,14 +155,22 @@ class Collection:
                 continue
             key = "coverage:" + dataset
             if dataset not in completed and not any(q.get("dataset") == dataset and q["status"] == "collected" for q in self.state["queries"].values()):
-                self.state["queries"][key] = dict(dataset=dataset, status="gap", reason="No usable export supplied.")
+                reason = "No usable export supplied."
+                if receipt and dataset not in ("trace", "ual"):
+                    reason = f"{dataset} is outside Exchange PowerShell coverage. Supply an authorized export if available."
+                self.state["queries"][key] = dict(dataset=dataset, status="gap", reason=reason)
             else:
                 self.state["queries"].pop(key, None)
+        if receipt:
+            self.state["queries"].update(receipt.coverage())
         self.update()
 
     def collect(self, queries):
+        if self.case.meta.get("microsoft", True):
+            raise CaseError("Microsoft collection requires the existing-session PowerShell adapter.")
         self.mode("live")
-        shared_ips = {v.get("value") for v in self.state["queries"].values() if v.get("shared_ip")}
+        from .workspace import Workspace
+
         for q in queries:
             meta = q.metadata()
             key = digest(encode(meta))
@@ -148,47 +179,21 @@ class Collection:
                 continue
             self.attempted.add(key)
             count = 0
-            ip_users = set()
             try:
-                if q.kind == "ip" and q.value in shared_ips:
-                    raise SourceError("Shared IP expansion stopped at the configured user threshold.")
                 if self.remaining <= 0:
                     raise SourceError("Raw record budget exhausted.")
-                google = q.dataset in GOOGLE_APPS
-                if google:
-                    if self.workspace is None:
-                        self.workspace = Workspace(self.case)
-                    pages = self.workspace.pages(q)
-                else:
-                    if not self.graph:
-                        try:
-                            self.graph = Graph(self.case)
-                        except CaseError as exc:
-                            if self.case.meta.get("google_workspace"):
-                                raise SourceError(str(exc)) from exc
-                            raise
-                    pages = fetch(self.graph, q, key)
-                for page in pages:
-                    if isinstance(page, HuntingPage):
-                        raw, parameters = page.data, {**meta, **page.parameters}
-                    else:
-                        raw, parameters = page, meta
-                    collector = "google_reports" if google else "graph"
-                    self.remaining -= acquire(self.case, q.dataset, raw, collector, parameters, self.remaining)
-                    rows = records(raw, q.dataset)
-                    count += len(rows)
-                    if q.kind == "ip" and q.dataset in ("interactive", "noninteractive"):
-                        ip_users.update(str(r["userPrincipalName"]).casefold() for r in rows
-                                        if isinstance(r, dict) and r.get("userPrincipalName"))
-                        if len(ip_users) >= self.case.options["shared_ip_users"]:
-                            shared_ips.add(q.value)
-                            raise SourceError("Shared IP expansion stopped at the configured user threshold.")
+                if q.dataset not in GOOGLE_APPS:
+                    raise CaseError("Workspace collection accepts only Google audit datasets.")
+                if self.workspace is None:
+                    self.workspace = Workspace(self.case)
+                for raw in self.workspace.pages(q):
+                    self.remaining -= acquire(self.case, q.dataset, raw, "google_reports", meta, self.remaining)
+                    count += len(records(raw, q.dataset))
                 outcome = dict(status="collected")
             except (SourceError, json.JSONDecodeError, KeyError, UnicodeError) as exc:
                 reason = str(exc) if isinstance(exc, SourceError) else "Unexpected provider response format."
                 outcome = dict(status="gap", reason=reason)
-            self.state["queries"][key] = {**meta, **outcome, "records": count,
-                                          "shared_ip": q.kind == "ip" and q.value in shared_ips}
+            self.state["queries"][key] = {**meta, **outcome, "records": count, "shared_ip": False}
             self.case.log("collect", dataset=q.dataset, api=q.path, **outcome, records=count)
             self.update()
 

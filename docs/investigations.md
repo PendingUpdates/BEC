@@ -1,37 +1,22 @@
 # Investigation guide
 
-For your first Microsoft account investigation, start with the [Windows walkthrough](../README.md#first-microsoft-investigation-on-windows) or [platform setup](prerequisites.md). The commands below run from the BEC directory. On macOS and Ubuntu use `.venv/bin/bec` in place of the Windows launcher.
+## Investigate Microsoft 365 in PowerShell
 
-Browser sign-in uses the investigator's delegated access. Unattended collection uses application permissions and a tenant-bound credential. Read the setup for your workflow. [Delegated sign-in](security.md#investigator-sign-in) · [Unattended application access](security.md#unattended-application-access)
-
-## Configure an unattended Microsoft investigation
-
-1. Configure the application permissions and Exchange message trace prerequisite in [Security and permissions](security.md).
-2. Copy `config/example-tenant.json` to `client-a.json`. Set your tenant alias, Entra directory GUID and application client GUID. Set the display timezone and known shared egress CIDRs for your tenant.
-3. Supply an app certificate with its private key through `BEC_CERTIFICATE_PATH`. The credential can also come from a secret store that sets `BEC_CLIENT_SECRET` in the process environment.
-4. Choose an incident window within your tenant's available log retention. This example investigates the last completed 24 hours.
+From the extracted BEC folder, use the PowerShell window containing your single authorized Exchange Online user session. Supply a tenant GUID obtained independently for this incident. Python shows the signed-in account, customer tenant, UTC window and local output directory before prompting for the affected primary addresses. [Windows first use](../README.md#first-investigation-on-windows) · [Platform setup](prerequisites.md) · [Session requirements](security.md#investigator-sign-in)
 
 ```powershell
-$env:BEC_CERTIFICATE_PATH = 'C:\IR\credentials\bec-app.pem'
-$start = [DateTimeOffset]::UtcNow.AddDays(-1).ToString('o')
-$end = [DateTimeOffset]::UtcNow.ToString('o')
-$env:BEC_CASES = 'C:\IR\cases'
-$caseId = .\.venv\Scripts\bec.exe case create --config .\client-a.json --tenant CLIENT-A --user analyst@example.com --start $start --end $end
-.\.venv\Scripts\bec.exe investigate $caseId --dry-run
-.\.venv\Scripts\bec.exe --verbose investigate $caseId
-.\.venv\Scripts\bec.exe verify $caseId
+.\Invoke-BEC.ps1 -TenantId $CustomerTenantId
 ```
 
-The case store defaults to `cases` under the working directory. Set `BEC_CASES` or supply `--root D:\IR\cases` **before** the command to choose another store. Keep real cases and credentials outside the source checkout. Tenant binding and investigation options are captured at creation. The command prints only the case ID on successful creation.
-
-New cases include Defender collection by default. To enable it for an existing v0.1 live case, grant the application the Microsoft Graph application permission `ThreatHunting.Read.All` and run the following from the same case store. The dry run previews the plan. The investigation saves the choice and collects the newly enabled sources.
+`$CustomerTenantId` is the customer's directory GUID from the incident record. The default window covers the previous 24 hours through the start of this run. To use a specific completed interval up to 24 hours, supply the actual UTC bounds and affected address.
 
 ```powershell
-.\.venv\Scripts\bec.exe investigate $caseId --defender --dry-run
-.\.venv\Scripts\bec.exe investigate $caseId --defender
+.\Invoke-BEC.ps1 -TenantId $CustomerTenantId -Accounts $AffectedAccount -StartUtc $StartUtc -EndUtc $EndUtc
 ```
 
-For a tenant without Defender telemetry, set `"defender": false` under the profile's `options`. Explicit API failures are reported as telemetry gaps while other workloads can continue, but an unavailable table can also return HTTP success with zero rows. A successful empty response does not prove that the workload was available or that the incident had no activity. Integrity verification can pass even when telemetry is missing or incomplete. Validate each in-scope workload against an independently known event and record every excluded workload, including Defender when disabled. [Permission and provisioning details](security.md)
+One case is written per mailbox. `-CaseRoot` selects a protected local directory. By default cases go under `~/BEC-Cases/TENANT/CASE_ID` and versioned exports under `~/BEC-Cases/exchange-exports/TENANT`. The console prints the local export and report paths. `bec microsoft --help` explains the launcher. The Python executable cannot inherit the parent PowerShell connection. With a wheel installed in an activated virtual environment, use the packaged adapter in the same window: `& (bec microsoft --adapter) -Python (Get-Command python -CommandType Application).Source -TenantId $CustomerTenantId`.
+
+The adapter reads sent and received message traces separately and performs one actor-filtered audit read for selected mail activity and rule changes. Reports flag empty, failed and capped reads, missing Entra and Defender data and omitted inbox-rule state. For high volume, select a shorter explicit interval. An unverifiable session or mailbox stops incident reads. [Workload limits](security.md#microsoft-sources-and-limits)
 
 ## Investigate Google Workspace
 
@@ -46,16 +31,11 @@ $caseId = .\.venv\Scripts\bec.exe case create --config .\workspace.json --tenant
 .\.venv\Scripts\bec.exe investigate $caseId
 ```
 
-For an existing Microsoft case, use the same case store and tenant alias. The first command previews collection. The second saves the Google customer binding and adds Workspace evidence to the case.
-
-```powershell
-.\.venv\Scripts\bec.exe investigate $caseId --workspace-config .\workspace.json --dry-run
-.\.venv\Scripts\bec.exe investigate $caseId --workspace-config .\workspace.json
-```
+Use a Workspace-only profile for live Google reads. Already acquired Microsoft and Workspace exports can share an offline case with both native bindings.
 
 ## Work with an existing export
 
-Copy a tenant's JSON exports into one directory. Create a `bundle.json` alongside them. For example:
+Use already authorized exports from one tenant on a local drive. Preserve their original bytes. Create a `bundle.json` alongside them. For example:
 
 ```json
 {
@@ -71,10 +51,14 @@ Copy a tenant's JSON exports into one directory. Create a `bundle.json` alongsid
 Use the same tenant and directory ID as the case. For offline cases with no configured directory ID, omit it from the bundle. Records declaring a native organization ID require a matching profile. Each file may hold a JSON array or a Graph response object with a `value` array. UAL also accepts arrays containing Exchange `AuditData` JSON strings. Available dataset keys are `interactive`, `noninteractive`, `directory`, `ual`, `trace`, and `service_principal`. Keep the original byte encoding as UTF-8, optionally with BOM. Exports should contain evidence from one tenant.
 
 ```powershell
-.\.venv\Scripts\bec.exe investigate $caseId --bundle .\exports\bundle.json
+.\.venv\Scripts\bec.exe offline --bundle .\exports\bundle.json --tenant $TenantAlias --directory-id $DirectoryId --user $AffectedAccount --start $StartUtc --end $EndUtc
 ```
 
 For Defender exports, use the exact table name as the dataset key. Supported tables are `EmailEvents`, `EmailUrlInfo`, `EmailAttachmentInfo`, `UrlClickEvents`, `EmailPostDeliveryEvents` and `AlertEvidence`. Files can contain a native row array or an Advanced Hunting response with a `results` array. Preserve column names and timestamps. To add such a bundle to a v0.1 export case, use `investigate ID --defender --bundle FILE`.
+
+Use the exact alias and native identifiers from the investigation. For Workspace files also pass `--google-customer-id`. For a case without a Microsoft directory binding, omit `--directory-id`. Use `bec offline --case CASE_ID --bundle FILE` to add evidence to an existing export case. The importer checks the listed files and their bindings before creating a new case.
+
+A PowerShell export includes per-read coverage and file hashes. For replay, supply the original tenant GUID as both `--tenant` and `--directory-id`, the primary account and the exact authorized UTC bounds. The evidence manifest records the preserved record bytes and the SHA-256 of the capture receipt.
 
 ## Compare saved cases offline
 
@@ -111,12 +95,13 @@ Results preserve raw artifact hashes, record indexes, and Google child-event ind
 
 | Command | Result |
 | --- | --- |
-| `bec microsoft [ACCOUNT ...]` | Sign in, collect account-scoped Microsoft 365 logs and print one report per account |
+| `Invoke-BEC.ps1 -TenantId GUID` / `bec microsoft --help` | Read named mailboxes in the verified PowerShell session and print one local report per account |
+| `bec offline --bundle FILE --case ID` | Verify and import a local export. Use `--tenant`, the account and incident bounds to start a case. |
 | `bec compare BEFORE_DIR AFTER_DIR [--format json\|html] [--output FILE]` | Verify and compare saved raw evidence without changing either source case |
 | `bec search CASE_DIR TYPE VALUE [--format json\|html] [--output FILE]` | Read-only exact typed indicator lookup in verified saved evidence |
 | `bec case create --tenant … --user … --start … --end … [--config FILE]` | Create a case and print its ID |
-| `bec collect ID [--bundle FILE] [--dry-run] [--defender] [--workspace-config FILE]` | Acquire primary-user evidence and historical sign-ins |
-| `bec investigate ID [--bundle FILE] [--dry-run] [--defender] [--workspace-config FILE]` | Collect, expand entity scope, correlate, render and summarize |
+| `bec collect ID [--bundle FILE] [--dry-run] [--defender] [--workspace-config FILE]` | Import scoped exports or acquire Google Workspace evidence |
+| `bec investigate ID [--bundle FILE] [--dry-run] [--defender] [--workspace-config FILE]` | Analyze a local case or run a Workspace-only investigation |
 | `bec analyze ID` or `bec report ID` | Verify stored raw evidence and rebuild the analysis locally |
 | `bec pivot ip 198.51.100.74 --case ID [--dry-run]` | Add a persistent analyst IP seed and rebuild the case |
 | `bec pivot user user@example.com --case ID [--dry-run]` | Add a persistent analyst user seed |
@@ -145,11 +130,9 @@ A sequence match describes observed order and shared identifiers. Assessing mali
 
 ## Scope and verification
 
-For authorized live lab acceptance, use the [E2 lab-validation procedure](lab-validation.md) and `scripts/validate_lab.py`. It previews exact bounded queries and checks known events against preserved live evidence. No lab target has been supplied for the current E2 validation, so that gate remains **not executed**.
+The Exchange adapter needs separate operator qualification on supported PowerShell and Exchange module versions. Legacy Microsoft Graph collection is retired. Historical cases retain verification, replay, search and comparison.
 
-This release covers Microsoft 365 investigation and Google Workspace login, OAuth and Gmail audit acquisition and correlation. Investigation runs perform forensic reads and create Purview search jobs. Each provider can also run on its own.
-
-BEC's Defender collection is limited to the six email-related tables listed above. It does not collect endpoint telemetry, install device agents, capture disks or memory, execute ransomware exercises, or perform containment. It does not reset credentials, revoke tokens, remediate mailbox rules, fetch message bodies, or expose an arbitrary hunting-query console. Identity and OAuth evidence supports the email/account investigation; it does not turn this project into a device capture tool.
+BEC's Defender export support covers the six email-related tables listed above. It does not collect endpoint telemetry, install device agents, capture disks or memory, execute ransomware exercises, or perform containment. It does not reset credentials, revoke tokens, remediate mailbox rules, fetch message bodies, or expose an arbitrary hunting-query console. Identity and OAuth evidence supports the email/account investigation; it does not turn this project into a device capture tool.
 
 This standalone source continues the email-only v0.3.0 implementation, independently packaged in v0.6.0 and extended with saved-case comparison in v0.7.0 and typed offline search in v0.8.0. It does not include the endpoint/image features from the intervening combined releases. Use a separate case directory for this tool; opening combined Windows/image cases is not a supported migration path. Export original cloud records into a tenant-bound bundle when transferring an investigation, and retain the original case separately.
 
@@ -160,11 +143,3 @@ This standalone source continues the email-only v0.3.0 implementation, independe
 Offline `snapshot-import` / `snapshot-view` preserve a tenant-bound current mailbox snapshot separately from historical UAL rule evidence. They do not call providers or modify the original case. The commands are included in this source checkout; live producer data has not been validated. See [contract, usage and limits](mailbox-state.md) and [recorded validation](mailbox-state-validation.md).
 
 [Installation by platform and package contents](prerequisites.md)
-
-## First live Microsoft 365 pilot
-
-Use the [bounded lab-validation procedure](lab-validation.md) for an explicitly authorized pilot on either Windows or macOS. Start with one named mailbox, a completed UTC window of at most 24 hours, and an independently known native event. Run `preflight` before `run`; preflight makes no provider calls and does not validate access. The runner uses zero baseline days, zero expansion depth and `collect` rather than automatic `investigate` pivots. Its required-source list is an assertion, not a query selector. Missing pagination/restricted-access gates remain untested, not passed. The example plan leaves both gate lists empty. If the other gates pass, a live `run` with either list empty returns `2` with status `incomplete`. A failed assessment also returns `2`. Read `public-summary.json` for the status and individual gate results. A live `run` returns `0` only when every gate passes.
-
-Use separate new private run directories per platform. Windows commands use `.\.venv\Scripts\python.exe -I scripts\validate_lab.py`; macOS uses `.venv/bin/python -I scripts/validate_lab.py`. Both accept `preflight --plan PRIVATE_PLAN` or, only for the authorized operator, `run --plan PRIVATE_PLAN --run-dir NEW_PRIVATE_DIRECTORY`. Replace all plan/profile placeholders and keep credentials outside the checkout. App-only authentication and provider-side Purview search jobs are documented in the security guide; this is incident collection, not a posture audit.
-
-For this pilot, use only existing, explicitly approved application permissions and the operator-selected app-only certificate/client-secret mechanism. The pilot runner uses the application profile. The investigator command uses browser sign-in. Preflight checks the plan and lists queries; it neither reads credentials nor proves access. Stop and record a blocker if approved access is missing rather than changing permissions during the test. Record excluded workloads and compare in-scope results with independently known events; successful integrity verification alone is not telemetry-coverage acceptance.

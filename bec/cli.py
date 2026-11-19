@@ -3,34 +3,48 @@ import argparse
 import ipaddress
 import json
 import os
-import re
 import sys
-from datetime import UTC, datetime, timedelta
+import uuid
 from pathlib import Path
 from zoneinfo import ZoneInfoNotFoundError
 
 from . import __version__
 from .analysis import scope
-from .collection import Collection, replay
-from .graph import Graph, plan
-from .microsoft_login import sign_in
+from .bundles import ExportBundle, local_path
+from .collection import Collection, replay, verify_export_files
+from .exchange import ExchangeReceipt, affected_accounts, ADAPTER
 from .reporting import report, timesketch
-from .storage import Case, CaseError, create, iso, read, save, user_address, workspace_profile
+from .storage import Case, CaseError, GOOGLE_APPS, create, iso, read, save, user_address, workspace_profile
 
 
 def parser():
-    p = argparse.ArgumentParser(prog="bec", description="Bacon Egg and Cheese · Microsoft 365, Defender and Google Workspace email compromise investigations")
+    p = argparse.ArgumentParser(prog="bec", description="Investigate business email compromise in an existing Exchange Online PowerShell session. "
+                                "Start with 'bec microsoft --help'.")
     p.add_argument("--root", type=Path, default=os.environ.get("BEC_CASES"), help="case store")
     p.add_argument("--verbose", action="store_true", help="print collection and pivot progress")
     p.add_argument("--version", action="version", version="BEC " + __version__)
     cmd = p.add_subparsers(dest="command", required=True)
+    microsoft = cmd.add_parser("microsoft", help="start a read-only investigation in your connected PowerShell window",
+        description="In the connected PowerShell window, run ./Invoke-BEC.ps1 -TenantId YOUR-CUSTOMER-GUID "
+                    "from the BEC folder. Python prompts for affected accounts and writes each case report.")
+    microsoft.add_argument("--adapter", action="store_true", help="print the installed PowerShell adapter path")
+    offline = cmd.add_parser("offline", help="import an authorized local bundle and write the case report",
+                             description="Analyze a local export bundle. Supply an existing case or a tenant, "
+                             "affected account and incident window for a new offline case.")
+    offline.add_argument("--bundle", required=True, metavar="FILE", help="local bundle.json listing the export files")
+    target = offline.add_mutually_exclusive_group(required=True)
+    target.add_argument("--case", dest="case_id", metavar="ID", help="reuse a saved case and its scope")
+    target.add_argument("--tenant", help="expected tenant alias for a new case")
+    offline.add_argument("--user", help="affected account for a new case")
+    offline.add_argument("--start", help="incident start with UTC offset for a new case")
+    offline.add_argument("--end", help="incident end with UTC offset for a new case")
+    offline.add_argument("--directory-id", help="expected Microsoft directory GUID, when the manifest declares one")
+    offline.add_argument("--google-customer-id", help="expected customer ID for Workspace exports")
     case = cmd.add_parser("case", help="create a tenant-scoped case").add_subparsers(dest="action", required=True)
     new = case.add_parser("create")
     for flag in ("tenant", "user", "start", "end"):
         new.add_argument("--" + flag, required=True)
     new.add_argument("--config", type=Path, help="tenant profile JSON")
-    microsoft = cmd.add_parser("microsoft", help="sign in and investigate one or more Microsoft 365 accounts")
-    microsoft.add_argument("accounts", nargs="*", metavar="ACCOUNT", help="affected email addresses (or enter after sign-in)")
     comparison = cmd.add_parser("compare", help="compare two saved case directories without changing them")
     comparison.add_argument("before", type=Path, help="earlier case directory containing case.json")
     comparison.add_argument("after", type=Path, help="later case directory containing case.json")
@@ -48,8 +62,13 @@ def parser():
         sub.add_argument("snapshot", type=Path, help="snapshot JSON for import; imported companion directory for view")
         if action == "snapshot-import":
             sub.add_argument("--output", type=Path, required=True, help="new companion directory outside the case")
-    for name in ("collect", "investigate", "analyze", "report", "timeline", "verify", "evidence"):
-        sub = cmd.add_parser(name)
+    commands = {"collect": "import a case bundle or collect Google Workspace evidence",
+                "investigate": "investigate a saved export or Google Workspace case",
+                "analyze": "analyze verified saved evidence", "report": "rebuild a local case report",
+                "timeline": "export a case timeline", "verify": "verify preserved evidence hashes",
+                "evidence": "show the case evidence manifest"}
+    for name, help_text in commands.items():
+        sub = cmd.add_parser(name, help=help_text)
         if name == "timeline":
             sub.add_argument("case_id", help="case ID or export-timesketch")
             sub.add_argument("export_case", nargs="?")
@@ -59,9 +78,9 @@ def parser():
         if name in ("collect", "investigate"):
             sub.add_argument("--bundle", type=Path, help="tenant-bound export bundle.json")
             sub.add_argument("--dry-run", action="store_true")
-            sub.add_argument("--defender", action="store_true", help="enable Defender collection for this case")
+            sub.add_argument("--defender", action="store_true", help="include Defender evidence in an export case")
             sub.add_argument("--workspace-config", type=Path, help="bind Google Workspace from a matching tenant profile")
-    pivot = cmd.add_parser("pivot", help="investigate an additional user or IP within the case")
+    pivot = cmd.add_parser("pivot", help="pivot within a saved export or Google Workspace investigation")
     pivot.add_argument("kind", choices=("ip", "user"))
     pivot.add_argument("value")
     pivot.add_argument("--case", dest="case_id", required=True)
@@ -74,51 +93,6 @@ def manual_pivots(case):
     return [tuple(p) for p in read(path)] if path.exists() else []
 
 
-def affected_accounts(values):
-    addresses = []
-    for value in values:
-        for text in re.split(r"[,;\s]+", value.strip()):
-            if not text:
-                continue
-            address = user_address(text)
-            local, domain = address.split("@")
-            labels = domain.split(".")
-            if (any(c in local for c in "*?") or
-                    not all(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", label) for label in labels)):
-                raise CaseError("Enter exact account addresses such as name@company.com. Wildcards are unsupported.")
-            if address not in addresses:
-                addresses.append(address)
-    if not addresses:
-        raise CaseError("Enter at least one affected account address.")
-    return addresses
-
-
-def investigate_accounts(args, root):
-    accounts = affected_accounts(args.accounts) if args.accounts else None
-    with sign_in() as session:
-        print(f"Signed into Microsoft tenant {session.directory_id}.")
-        while accounts is None:
-            try:
-                accounts = affected_accounts([input("Accounts to investigate (separate addresses with commas): ")])
-            except EOFError as exc:
-                raise CaseError("Account entry ended before an address was supplied.") from exc
-            except CaseError as exc:
-                print(str(exc), file=sys.stderr)
-        end = datetime.now(UTC)
-        start, end = iso(end - timedelta(hours=24)), iso(end)
-        print(f"Collecting the last 24 hours, {start} to {end}. Saving cases in {root}.", flush=True)
-        profile = dict(tenant=session.directory_id, directory_id=session.directory_id, client_id=session.client_id,
-                       options=dict(baseline_days=0, max_depth=0, max_users=1))
-        status = 0
-        for account in accounts:
-            case = create(root, session.directory_id, account, start, end, profile, delegated=True)
-            print(f"Collecting {account}. Case {case.id} (resume with bec investigate {case.id}).", flush=True)
-            result = run_case(args, case, session)
-            if result:
-                status = result
-        return status
-
-
 def summarize(case, overview):
     print(f"{case.id}  {case.tenant}  {case.meta['user']}")
     workspace = f"{overview['workspace_matches']} Workspace correlations | " if case.meta.get("google_workspace") else ""
@@ -129,8 +103,10 @@ def summarize(case, overview):
     print(overview["output"])
 
 
-def run_case(args, case, session=None):
-    cmd = "investigate" if args.command == "microsoft" else args.command
+def run_case(args, case):
+    from .graph import plan
+
+    cmd = args.command
     bundle = getattr(args, "bundle", None)
     manual = manual_pivots(case)
     extra = None
@@ -155,6 +131,8 @@ def run_case(args, case, session=None):
     if getattr(args, "dry_run", False):
         dry_queries = plan(case, *extra) if extra else primary_plan
         active_mode = "export" if bundle else state.state.get("mode") or "live"
+        if active_mode == "live" and case.meta.get("microsoft", True):
+            raise CaseError("Use Invoke-BEC.ps1 for Microsoft reads. Legacy Graph query plans cannot run.")
         print(json.dumps(dict(case=case.meta, mode=active_mode,
             bundle=str(bundle) if bundle else None,
             queries=[q.metadata() for q in dry_queries] if active_mode == "live" else [],
@@ -179,8 +157,6 @@ def run_case(args, case, session=None):
             case.log("update_providers")
         primary_plan = plan(case, *primary, baseline=True) + plan(case, *primary)
         state = Collection(case)
-        if session is not None:
-            state.graph = Graph(case, session)
         if cmd == "verify":
             print(f"Verified {len(case.manifest()['artifacts'])} raw artifacts for {case.id}.")
             return 0
@@ -230,13 +206,69 @@ def run_case(args, case, session=None):
         return 2 if overview["gaps"] else 0
 
 
+def run_offline(args):
+    bundle = ExportBundle.load(args.bundle, offline=True)
+    root = local_path(args.root or Path.home() / "BEC-Cases")
+    if args.case_id:
+        if any((args.user, args.start, args.end, args.directory_id, args.google_customer_id)):
+            raise CaseError("Use --case by itself with --bundle. Scope comes from the saved case.")
+        case = Case.find(root, args.case_id, other_root=local_path("cases") if args.root is None else None)
+        if case.meta.get("microsoft_auth") == "delegated" or Collection(case).state["mode"] == "live":
+            raise CaseError("Use a separate offline case for exports from a live case.")
+        receipt = ExchangeReceipt.check(bundle, case.tenant, case.meta["directory_id"], case.meta["user"],
+                                        case.meta["start"], case.meta["end"])
+        hashes = verify_export_files(bundle, case.tenant, case.meta["directory_id"],
+                                     (case.meta.get("google_workspace") or {}).get("customer_id"),
+                                     case.meta.get("microsoft", True), receipt)
+    else:
+        if not all((args.user, args.start, args.end)):
+            raise CaseError("A new offline case requires --tenant, --user, --start and --end.")
+        accounts = affected_accounts([args.user])
+        if len(accounts) != 1:
+            raise CaseError("Give one affected account per offline case.")
+        try:
+            directory = str(uuid.UUID(args.directory_id)) if args.directory_id else None
+        except ValueError as exc:
+            raise CaseError("--directory-id must be a Microsoft directory GUID.") from exc
+        customer = args.google_customer_id
+        datasets = {dataset for dataset, _, _ in bundle.files}
+        if datasets.intersection(GOOGLE_APPS) and not customer:
+            raise CaseError("Workspace exports require the expected --google-customer-id.")
+        profile = dict(tenant=args.tenant, directory_id=directory,
+                       microsoft=bool(directory or datasets.difference(GOOGLE_APPS)))
+        if customer:
+            profile["google_workspace"] = {"customer_id": customer}
+        receipt = ExchangeReceipt.check(bundle, args.tenant, directory, accounts[0], args.start, args.end)
+        if receipt:
+            profile["options"] = dict(baseline_days=0, max_depth=0, max_users=1)
+        hashes = verify_export_files(bundle, args.tenant, directory, customer, profile["microsoft"], receipt)
+        case = create(root, args.tenant, accounts[0], args.start, args.end, profile, export_only=True, named_account=bool(receipt))
+        print(f"Case {case.id}", flush=True)
+    with case.lock():
+        case = Case(case.path)
+        if case.meta.get("microsoft_auth") == "delegated":
+            raise CaseError("Use a separate offline case for exports from an investigator sign-in case.")
+        case.verify()
+        Collection(case).import_files(bundle, verified_hashes=hashes, receipt=receipt)
+        overview = report(case, manual_pivots(case))
+        summarize(case, overview)
+    return 2 if overview["gaps"] else 0
+
+
 def main(argv=None):
     args = parser().parse_args(argv)
-    investigator_root = Path.home() / "BEC-Cases"
-    root = (args.root or (investigator_root if args.command == "microsoft" else Path("cases"))).resolve()
     try:
+        if args.command == "offline":
+            return run_offline(args)
         if args.command == "microsoft":
-            return investigate_accounts(args, root)
+            if args.adapter:
+                print(ADAPTER)
+                return 0
+            print("In your connected PowerShell window, run ./Invoke-BEC.ps1 -TenantId YOUR-CUSTOMER-GUID "
+                  "from the extracted BEC folder. Enter the affected accounts at the prompt.", file=sys.stderr)
+            return 1
+        investigator_root = Path.home() / "BEC-Cases"
+        root = (args.root or Path("cases")).resolve()
         if args.command in ("snapshot-import", "snapshot-view"):
             from .mailbox_state import import_snapshot, view_snapshot
             result = (import_snapshot(args.directory, args.snapshot, args.output)
@@ -269,12 +301,11 @@ def main(argv=None):
         elif args.command == "timeline" and args.export_case:
             raise CaseError("Use bec timeline export-timesketch CASE_ID.")
         case = Case.find(root, args.case_id, other_root=investigator_root if args.root is None else None)
-        if case.meta.get("microsoft_auth") == "delegated" and args.command in ("collect", "investigate", "pivot"):
-            if args.command == "pivot" or args.bundle or args.workspace_config:
-                raise CaseError("This Microsoft sign-in case collects only its named account. Create a separate case for a new target or source.")
-            if not args.dry_run:
-                with sign_in(case.meta["client_id"], case.meta["directory_id"]) as session:
-                    return run_case(args, case, session)
+        if (args.command in ("collect", "investigate", "pivot") and case.meta.get("microsoft", True)
+                and not getattr(args, "bundle", None) and not getattr(args, "dry_run", False)
+                and Collection(case).state["mode"] != "export"):
+            raise CaseError("Use Invoke-BEC.ps1 in your authorized Exchange Online session for Microsoft collection. "
+                            "Saved cases remain available through analyze, report, verify and search.")
         return run_case(args, case)
     except (CaseError, OSError, ValueError, KeyError, TypeError, ZoneInfoNotFoundError) as exc:
         print(f"BEC: {exc}", file=sys.stderr)

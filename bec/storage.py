@@ -28,6 +28,10 @@ class CaseError(ValueError):
     pass
 
 
+class SourceError(Exception):
+    """A reportable telemetry gap with a safe-to-log explanation."""
+
+
 def timestamp(value, vendor_utc=False):
     if not isinstance(value, str) or "T" not in value and " " not in value:
         raise CaseError("An ISO date and time with timezone is required.")
@@ -117,7 +121,7 @@ def microsoft_enabled(case):
     return case.meta.get("microsoft", True)
 
 
-def create(root, tenant, user, start, end, profile=None, *, delegated=False):
+def create(root, tenant, user, start, end, profile=None, *, delegated=False, export_only=False, named_account=False):
     if not LABEL.fullmatch(tenant) or tenant.upper() in RESERVED:
         raise CaseError("Invalid tenant alias.")
     start, end = timestamp(start), timestamp(end)
@@ -129,7 +133,9 @@ def create(root, tenant, user, start, end, profile=None, *, delegated=False):
         raise CaseError("Profile must match the tenant and contain only documented keys.")
     directory_id = str(uuid.UUID(p["directory_id"])) if p.get("directory_id") else None
     client_id = str(uuid.UUID(p["client_id"])) if p.get("client_id") else None
-    if bool(directory_id) != bool(client_id):
+    if export_only and (client_id or delegated):
+        raise CaseError("An offline case accepts evidence identifiers only.")
+    if not export_only and bool(directory_id) != bool(client_id):
         raise CaseError("Supply both directory_id and client_id for a live profile.")
     cfg = settings(p.get("options", {}))
     google = workspace_profile(p["google_workspace"]) if "google_workspace" in p else None
@@ -144,7 +150,9 @@ def create(root, tenant, user, start, end, profile=None, *, delegated=False):
     save(path / "case.json", dict(version=__version__, id=case_id, tenant=tenant, user=user,
          start=iso(start), end=iso(end), created=now(), directory_id=directory_id, client_id=client_id,
          microsoft=microsoft, google_workspace=google, options=cfg,
-         **({"microsoft_auth": "delegated"} if delegated else {})))
+         **({"microsoft_auth": "delegated"} if delegated else {}),
+         **({"export_only": True} if export_only else {}),
+         **({"collection_scope": "named_account"} if named_account else {})))
     save(path / "evidence_manifest.json", dict(case_id=case_id, tenant=tenant, artifacts=[]))
     return Case(path)
 
@@ -206,6 +214,14 @@ class Case:
             raise CaseError("Invalid artifact location.")
         return path
 
+    def receipt_path(self, sha):
+        if not isinstance(sha, str) or not re.fullmatch("[a-f0-9]{64}", sha):
+            raise CaseError("Invalid Exchange receipt reference.")
+        path = self.path / "collection" / "exchange" / (sha + ".json")
+        if not path.resolve().is_relative_to(self.path.resolve()):
+            raise CaseError("Exchange receipt must remain inside its case.")
+        return path
+
     def verify(self):
         # A raw page and its manifest are two files. Finish any interrupted
         # transaction while the caller holds the case lock.
@@ -224,6 +240,10 @@ class Case:
                     save(self.path / "evidence_manifest.json", m)
             journal.unlink()
         manifest = self.manifest()
+        for sha in manifest.get("exchange_receipts", []):
+            receipt = self.receipt_path(sha)
+            if not receipt.is_file() or digest(receipt.read_bytes()) != sha:
+                raise CaseError("Exchange receipt verification failed.")
         expected = set()
         for entry in manifest["artifacts"]:
             path = self.raw_path(entry)

@@ -1,4 +1,4 @@
-include LICENSE README.md
+include LICENSE README.md Invoke-BEC.ps1
 recursive-include docs *.md *.gif *.webp
 recursive-include config *.json
 include scripts/validate_lab.py scripts/lab-excluded-rows.sha256

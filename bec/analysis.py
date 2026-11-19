@@ -72,7 +72,8 @@ def scope(case, events, manual=None):
     """Breadth-first pivot with typed identifiers. Never pivot on an SMTP relay address."""
     cfg = case.options
     seed = ("user", case.meta["user"])
-    account_only = case.meta.get("microsoft_auth") == "delegated"
+    account_only = (case.meta.get("collection_scope") == "named_account" or
+                    case.meta.get("microsoft_auth") == "delegated")
     networks = [ipaddress.ip_network(c) for c in cfg["trusted_networks"]]
     index, users_by_ip = index_scope(events, case)
     known, counts = build_baseline(events, case)

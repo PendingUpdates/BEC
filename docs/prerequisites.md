@@ -1,63 +1,49 @@
 # Install BEC
 
-BEC requires Python 3.12 or newer on Windows, macOS and Ubuntu. From the **main** branch of the BEC repository, choose **Code → Download ZIP**. Each platform section starts with that download. [PendingUpdates/BEC on GitHub](https://github.com/PendingUpdates/BEC)
+Start with the BEC source ZIP. On GitHub select **main → Code → Download ZIP**. Extract it and work in the folder containing `pyproject.toml` and `Invoke-BEC.ps1`. All platforms require Python 3.12 or later. The base installation supports Microsoft operator-session collection, local analysis and reporting. [BEC repository](https://github.com/PendingUpdates/BEC)
 
 ## Windows
 
-1. In File Explorer, right-click the ZIP, choose **Extract All**, and open the extracted folder that contains `pyproject.toml`. Click the address bar, type `powershell`, and press Enter. Run `Get-Item .\pyproject.toml` to confirm the working directory.
+Choose **Extract All** in File Explorer. Open PowerShell in the extracted project folder. Check `Get-Item .\pyproject.toml` and `py -3 --version`. If the Python launcher is missing or the version is below 3.12, obtain your organization's approved Python installation first. [Python for Windows](https://www.python.org/downloads/windows/)
 
-2. Run `py -3 --version`. If the launcher is missing or the version is below 3.12, obtain an approved Python 3.12 or newer installation, reopen PowerShell in that folder, and check again. If you need to select an installed version explicitly, use its launcher selector in both commands, for example `py -3.12 --version` and `py -3.12 -m venv .venv`. [Python for Windows](https://www.python.org/downloads/windows/)
+```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install .
+.\.venv\Scripts\bec.exe --version
+```
 
-3. Create the virtual environment with that interpreter and install the live collection libraries.
+For an Exchange investigation, check the installed versions with `$PSVersionTable.PSVersion` and `Get-Module -ListAvailable ExchangeOnlineManagement | Select-Object Name, Version`. ExchangeOnlineManagement **3.10 or later requires PowerShell 7.6 or later**. Versions **3.7.0 through 3.9.2** support PowerShell 7.4 or later and provide the message trace cmdlet. Use the organization's approved module in the window where you signed in. [Microsoft module requirements](https://learn.microsoft.com/en-us/powershell/exchange/exchange-online-powershell-v2?view=exchange-ps) · [Message trace version requirement](https://learn.microsoft.com/en-us/exchange/monitoring/trace-an-email-message/message-trace-modern-eac)
 
-   ```powershell
-   py -3 -m venv .venv
-   .\.venv\Scripts\python.exe -m pip install ".[live]"
-   .\.venv\Scripts\bec.exe --version
-   ```
-
-4. Ask the administrator responsible for your organization's approved BEC Entra desktop app to confirm that `BEC_MICROSOFT_CLIENT_ID` is available in this PowerShell session. A single-tenant registration also requires `BEC_MICROSOFT_TENANT_ID`. If the app or a required value is missing, stop at this step. After an administrator deploys workstation settings, reopen PowerShell in the extracted folder. [Delegated sign-in setup and permissions](security.md#investigator-sign-in)
-
-5. Launch BEC and sign in to Microsoft.
-
-   ```powershell
-   .\.venv\Scripts\bec.exe microsoft
-   ```
-
-   Confirm the displayed tenant. At `Accounts to investigate (separate addresses with commas):` enter the affected accounts. BEC prints the report path for each one.
+Windows execution-policy acceptance has not been verified for either launch path. The source ZIP launcher (`Invoke-BEC.ps1`) calls the installed adapter (`bec/data/Invoke-BEC.ps1`). The wheel launch path invokes that installed script directly. If Windows policy blocks either script, stop and follow your organization's approved process. [First investigation on Windows](../README.md#first-investigation-on-windows)
 
 ## macOS
 
-Double-click the downloaded ZIP in Finder. Open Terminal in the extracted directory containing `pyproject.toml`. Run `ls pyproject.toml` and `python3 --version`. If Python is missing or older than 3.12, install an approved supported interpreter and check its version before continuing. [Python for macOS](https://www.python.org/downloads/macos/)
+Extract the ZIP in Finder. Open Terminal in the folder containing `pyproject.toml`. Check `python3 --version` and use an approved Python 3.12 or later. [Python for macOS](https://www.python.org/downloads/macos/)
 
 ```sh
 python3 -m venv .venv
-.venv/bin/python -m pip install '.[live]'
+.venv/bin/python -m pip install .
 .venv/bin/bec --version
 ```
-
-For a Microsoft investigation, complete [workstation sign-in setup](#microsoft-sign-in-on-macos-or-ubuntu) next.
 
 ## Ubuntu
 
-Use the file manager to extract the downloaded ZIP. Open a terminal in the extracted directory containing `pyproject.toml`. Run `ls pyproject.toml` and `python3 --version`. Use a Python 3.12 or newer interpreter with its matching `venv` support. If either is missing, obtain it through your approved Ubuntu software source before continuing. [Ubuntu Python setup](https://ubuntu.com/developers/docs/howto/python-setup/)
+Extract the ZIP and open a terminal in the folder containing `pyproject.toml`. Check `python3 --version`. Use Python 3.12 or later with its matching `venv` support. [Ubuntu Python setup](https://ubuntu.com/developers/docs/howto/python-setup/)
 
 ```sh
 python3 -m venv .venv
-.venv/bin/python -m pip install '.[live]'
+.venv/bin/python -m pip install .
 .venv/bin/bec --version
 ```
 
-## Microsoft sign-in on macOS or Ubuntu
+On macOS or Ubuntu, use `.venv/bin/bec` for local analysis. Microsoft collection requires a platform, PowerShell and Exchange module combination supported by your organization and Microsoft. In a supported, already connected PowerShell window, use `./Invoke-BEC.ps1 -TenantId 'CUSTOMER-TENANT-GUID'`. [Exchange module requirements](https://learn.microsoft.com/en-us/powershell/exchange/exchange-online-powershell-v2?view=exchange-ps)
 
-Have your administrator confirm that the organization’s approved BEC desktop app ID is available to the terminal as `BEC_MICROSOFT_CLIENT_ID`. A single-tenant app also requires `BEC_MICROSOFT_TENANT_ID`. Stop if the approved registration or a required setting is missing. [Delegated sign-in setup and permissions](security.md#investigator-sign-in)
+## What gets installed
 
-Once configured, run `.venv/bin/bec microsoft`. Sign in to Microsoft, confirm the displayed tenant, and enter the affected account addresses separated by commas. Each report covers the preceding 24 hours in UTC.
+| Component | Purpose |
+| --- | --- |
+| Base `pip install .` | The `bec` Python CLI, local case and report engine, rules, and PowerShell adapter. Windows also installs `tzdata` for time zones. |
+| Existing ExchangeOnlineManagement module | Microsoft's sign-in and incident cmdlets in the operator's PowerShell window. Managed separately from pip. |
+| Optional `pip install ".[live]"` | Requests and Google Auth for a separately authorized Google Workspace collector. The Microsoft route uses the base package. |
 
-## What the install includes
-
-The base package includes the `bec` command, local evidence analysis, report template and analysis rules. Windows also receives time-zone data. For a workstation used only for offline exports, comparison, search or mailbox snapshots, use `pip install .` in the virtual environment in place of `pip install ".[live]"`.
-
-The `live` option includes MSAL and Requests for investigator sign-in, Azure Identity for unattended Microsoft application credentials, and Google Auth with Requests for Workspace. Pip also installs the dependencies these libraries declare. Workstation installation and tenant permission approval are separate steps. [Project dependencies](../pyproject.toml)
-
-For Workspace account setup, private investigations and operator-authorized lab validation, see the [Workspace guide](workspace.md), [investigation guide](investigations.md) and [lab procedure](lab-validation.md).
+Pip can consult its package index during installation. For an offline install, use a prepared local wheel directory containing the build backend (`setuptools>=69`), its build requirements and the applicable runtime dependencies, for example `python -m pip install . --no-index --find-links "C:\IR\wheelhouse"`. Installed offline commands read local files. [Package metadata](../pyproject.toml) · [Operator guide](investigations.md)

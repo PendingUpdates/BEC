@@ -238,6 +238,8 @@ def public_summary(result):
 
 
 def run(target, directory):
+    if target["profile"].get("microsoft", True):
+        raise CaseError("The Microsoft Graph lab runner is retired. Use the existing-session Exchange workflow.")
     directory = outside_repository(directory, "Run directory")
     environment = credential_environment(target)
     directory.mkdir(parents=True, exist_ok=False)
