@@ -38,7 +38,7 @@ On macOS or Linux use `.venv/bin/python -m pip install '.[live]'`. The examples 
 
 Open the HTML path printed by `demo`. Under **Correlation findings**, find **Workspace OAuth grant followed by Gmail message access** and select **Show linked events**. The three rows show a login, an app authorization and a Gmail audit event for that app. Expand a row for the raw record and child-event index. Keep the case directory together so its evidence links work.
 
-Select **October invoice** under **Message evidence**, or click the subject on a mailbox row. The sample links eight observations: a message trace, Defender's email, URL and attachment records, a blocked Safe Links click, an Exchange mailbox read, XDR alert evidence and a later post-delivery action. Expand **linked observations** to inspect each source. URLs appear as plain text. File names and hashes are searchable.
+Before switching from the linked-events view, click **Clear filters** in **Chronology**. This clears **Search**, **Source**, **Actor**, **IP**, **Phase**, **Assessment** and the previous message selection; leave **Timeline** set to **Complete** to inspect every observation. Then select **October invoice** under **Message evidence**, or click the subject on a mailbox row. The sample links eight observations: a message trace, Defender's email, URL and attachment records, a blocked Safe Links click, an Exchange mailbox read, XDR alert evidence and a later post-delivery action. Expand **linked observations** to inspect each source. URLs appear as plain text. File names and hashes are searchable.
 
 ## Access and permissions by workflow
 
@@ -98,7 +98,7 @@ New cases include Defender collection by default. To enable it for an existing v
 .\.venv\Scripts\bec.exe investigate $caseId --defender
 ```
 
-For a tenant without Defender telemetry, set `"defender": false` under the profile's `options`. A denied or unavailable hunting table produces a named telemetry gap while other workloads continue. [Permission and provisioning details](docs/security.md)
+For a tenant without Defender telemetry, set `"defender": false` under the profile's `options`. Explicit API failures are reported as telemetry gaps while other workloads can continue, but an unavailable table can also return HTTP success with zero rows. A successful empty response does not prove that the workload was available or that the incident had no activity. Integrity verification can pass even when telemetry is missing or incomplete. Validate each in-scope workload against an independently known event and record every excluded workload, including Defender when disabled. [Permission and provisioning details](docs/security.md)
 
 ## Investigate Google Workspace
 
@@ -244,3 +244,11 @@ MIT, preserving the [Bacon Egg and Cheese contributors' attribution](LICENSE).
 Offline `snapshot-import` / `snapshot-view` preserve a tenant-bound current mailbox snapshot separately from historical UAL rule evidence. They do not call providers or modify the original case. The commands are included in this source checkout; live producer data has not been validated. See [contract, usage and limits](docs/mailbox-state.md) and [recorded validation](docs/mailbox-state-validation.md).
 
 [Prerequisites by purpose: offline use, optional live SDKs and tests](docs/prerequisites.md)
+
+## First live Microsoft 365 pilot
+
+Use the [bounded lab-validation procedure](docs/lab-validation.md) for an explicitly authorized pilot on either Windows or macOS. Start with one named mailbox, a completed UTC window of at most 24 hours, and an independently known native event. Run `preflight` before `run`; preflight makes no provider calls and does not validate access. The runner uses zero baseline days, zero expansion depth and `collect` rather than automatic `investigate` pivots. Its required-source list is an assertion, not a query selector. Missing pagination/restricted-access gates remain untested, not passed. The example plan leaves both gate lists empty. If the other gates pass, a live `run` with either list empty returns `2` with status `incomplete`. A failed assessment also returns `2`. Read `public-summary.json` for the status and individual gate results. A live `run` returns `0` only when every gate passes.
+
+Use separate new private run directories per platform. Windows commands use `.\.venv\Scripts\python.exe -I scripts\validate_lab.py`; macOS uses `.venv/bin/python -I scripts/validate_lab.py`. Both accept `preflight --plan PRIVATE_PLAN` or, only for the authorized operator, `run --plan PRIVATE_PLAN --run-dir NEW_PRIVATE_DIRECTORY`. Replace all plan/profile placeholders and keep credentials outside the checkout. App-only authentication and provider-side Purview search jobs are documented in the security guide; this is incident collection, not a posture audit.
+
+For this pilot, use only existing, explicitly approved application permissions and the operator-selected app-only certificate/client-secret mechanism. Unlike Flapjacks, BEC does not use an interactive delegated operator session. Preflight checks the plan and lists queries; it neither reads credentials nor proves access. Stop and record a blocker if approved access is missing rather than changing permissions during the test. Record excluded workloads and compare in-scope results with independently known events; successful integrity verification alone is not telemetry-coverage acceptance.
