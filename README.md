@@ -28,6 +28,6 @@ BEC is a command-line tool for investigating business email compromise. In your 
 
    Check the displayed operator and tenant GUID, then enter the affected primary email addresses and choose a time window. Type **yes** to collect or **q** to cancel. [Window choices and retention](docs/investigations.md#investigate-microsoft-365-in-powershell)
 
-BEC prints the PDF and workbook paths for each account. The default case store is `BEC-Cases` in your user folder. [Read the evidence package or add offline sources](docs/evidence-package.md)
+BEC prints one results folder under `BEC-Cases/Runs` in your user folder. Open **Run summary.pdf** to find each mailbox. Its **investigation.pdf** explains what the evidence shows, including rule names, actions and destinations when available. [Read the evidence package or add offline sources](docs/evidence-package.md)
 
 [Windows](docs/prerequisites.md#windows) · [macOS](docs/prerequisites.md#macos) · [Ubuntu](docs/prerequisites.md#ubuntu) · [Operator guide and custom windows](docs/investigations.md) · [Offline export fallback](docs/investigations.md#work-with-an-existing-export) · [MIT License](LICENSE)

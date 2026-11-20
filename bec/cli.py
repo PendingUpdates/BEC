@@ -43,6 +43,7 @@ def parser():
     offline.add_argument("--google-customer-id", help="expected customer ID for Workspace exports")
     offline.add_argument("--review-package", action="store_true",
                          help="also write a local analyst package for this verified Exchange trace receipt")
+    offline.add_argument("--run-directory", type=Path, metavar="RUN", help=argparse.SUPPRESS)
     offline.add_argument("--exchange-snapshot", type=Path, metavar="FILE",
                          help="include the current mailbox observations paired with this trace receipt")
     offline.add_argument("--snapshot-sha256", help="original hash recorded by the Exchange snapshot capture")
@@ -57,6 +58,8 @@ def parser():
     package.add_argument("--snapshot-sha256", help="original hash recorded by the Exchange snapshot capture")
     package.add_argument("--user-object-id", help="independently verified Entra object GUID of the affected account")
     package.add_argument("--mailbox-guid", help="independently verified Exchange mailbox GUID")
+    index = cmd.add_parser("run-summary", help="refresh a saved run index after closing its PDF")
+    index.add_argument("directory", type=Path, metavar="RUN", help="the local run folder printed by BEC")
     case = cmd.add_parser("case", help="create a tenant-scoped case").add_subparsers(dest="action", required=True)
     new = case.add_parser("create")
     for flag in ("tenant", "user", "start", "end"):
@@ -241,17 +244,41 @@ def run_case(args, case):
         return 2 if overview["gaps"] else 0
 
 
-def write_package(directory, output, inputs=None):
+def write_package(directory, output, inputs=None, *, run_plan=None):
     from .case_package import package_case
 
-    destination = package_case(directory, output, components=inputs)
-    print(f"Investigation package: {destination}")
-    print(f"Analyst workbook: {destination / 'triage.xlsx'}")
-    print(f"Investigation PDF: {destination / 'investigation.pdf'}")
-    return 2 if read(destination / "manifest.json")["has_coverage_gaps"] else 0
+    destination = package_case(directory, output, components=inputs, run_plan=run_plan)
+    if run_plan is None:
+        manifest = read(destination / "manifest.json")
+        print(f"Investigation package: {destination}")
+        print(f"Analyst workbook: {destination / 'triage.xlsx'}")
+        print(f"Investigation PDF: {destination / 'investigation.pdf'}")
+    else:
+        from .package_safety import read_bytes
+        from .run_index import finish_account
+        from .storage import digest
+
+        raw_manifest = read_bytes(destination / "manifest.json")
+        manifest = json.loads(raw_manifest)
+        account = manifest["scope"]["account"]
+        finish_account(output, run_plan, account, destination, digest(raw_manifest))
+        status = "saved with coverage gaps" if manifest["has_coverage_gaps"] else "saved"
+        print(f"{account} - {status}. Folder: {destination.name}", flush=True)
+    return 2 if manifest["has_coverage_gaps"] else 0
 
 
 def run_offline(args):
+    run_plan = None
+    if args.run_directory is not None:
+        if not args.review_package or args.case_id or args.google_customer_id or not args.root:
+            raise CaseError("A run requires a new, scoped Exchange capture under its confirmed case root.")
+        from .run_index import read_plan
+
+        if sys.stdin.isatty():
+            raise CaseError("Run packaging requires the confirmed plan from the launcher.")
+        run_plan = read_plan(sys.stdin.buffer)
+        if local_path(run_plan["root"]) != local_path(args.root):
+            raise CaseError("The run and the requested case store differ.")
     if bool(args.exchange_snapshot) != bool(args.snapshot_sha256):
         raise CaseError("Supply the Exchange snapshot and its original acquisition SHA-256 together.")
     if args.exchange_snapshot and not args.review_package:
@@ -295,6 +322,12 @@ def run_offline(args):
     if args.review_package:
         if not receipt:
             raise CaseError("--review-package on an import requires a verified scoped Exchange trace receipt.")
+        if run_plan is not None:
+            from .run_index import check_capture
+
+            confirmed = check_capture(args.run_directory, run_plan, bundle)
+            if confirmed.sha != receipt.sha:
+                raise CaseError("The run and the offline importer verified different capture receipts.")
         if args.exchange_snapshot:
             from .package_inputs import PackageInputs, paired_snapshot
 
@@ -304,7 +337,8 @@ def run_offline(args):
             package_inputs = PackageInputs(exchange_snapshot=args.exchange_snapshot, snapshot_sha256=current.sha256)
     if not args.case_id:
         case = create(root, args.tenant, accounts[0], args.start, args.end, profile, export_only=True, named_account=bool(receipt))
-        print(f"Case {case.id}", flush=True)
+        if run_plan is None:
+            print(f"Case {case.id}", flush=True)
     with case.lock():
         case = Case(case.path)
         if case.meta.get("microsoft_auth") == "delegated":
@@ -312,8 +346,12 @@ def run_offline(args):
         case.verify()
         Collection(case).import_files(bundle, verified_hashes=hashes, receipt=receipt)
         overview = report(case, manual_pivots(case))
-        summarize(case, overview)
-    status = write_package(case.path, case.path.parent.parent / "review-packages", package_inputs) if args.review_package else 0
+        if run_plan is None:
+            summarize(case, overview)
+    status = 0
+    if args.review_package:
+        destination = args.run_directory if run_plan is not None else case.path.parent.parent / "review-packages"
+        status = write_package(case.path, destination, package_inputs, run_plan=run_plan)
     return 2 if overview["gaps"] else status
 
 
@@ -322,6 +360,11 @@ def main(argv=None):
     try:
         if args.command == "offline":
             return run_offline(args)
+        if args.command == "run-summary":
+            from .run_index import refresh_run
+
+            print(refresh_run(args.directory))
+            return 0
         if args.command == "package":
             from .package_inputs import PackageInputs
 

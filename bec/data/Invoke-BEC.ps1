@@ -183,7 +183,7 @@ if ($StartUtc) { $scopeArgs += @('--start', $StartUtc) }
 if ($EndUtc) { $scopeArgs += @('--end', $EndUtc) }
 if ($CaseRoot) { $scopeArgs += @('--root', $CaseRoot) }
 if ($Accounts) { $scopeArgs += '--accounts'; $scopeArgs += $Accounts }
-$planText = & $Python -I -m bec.exchange plan-session --mailbox-state @scopeArgs
+$planText = & $Python -I -m bec.exchange plan-session --mailbox-state --run-layout @scopeArgs
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Assert-BecConnection
 $plan = $planText | ConvertFrom-Json
@@ -459,129 +459,161 @@ $stamp = "yyyy-MM-dd'T'HH:mm:ss.ffffff'Z'"
 $calls = [Collections.Generic.Queue[datetime]]::new()
 $serviceThrottled = $false
 $result = 0
-foreach ($account in $plan.accounts) {
-    Assert-BecConnection
-    try { $mailbox = @(& $mailboxRead -Identity $account -ErrorAction Stop -WarningAction Stop) }
-    catch { throw "Get-Mailbox could not verify $account in this session. No incident reads were made for this account." }
-    Assert-BecConnection
-    $mailboxObservedAt = [DateTime]::UtcNow.ToString($stamp, $dateFormat)
-    if ($mailbox.Count -ne 1 -or [string]$mailbox[0].PrimarySmtpAddress -ne $account -or
-        -not $mailbox[0].ExternalDirectoryObjectId) {
-        throw 'Could not verify one mailbox with that exact primary SMTP address. Stopping before incident reads.'
-    }
-    # A contradictory or unusable native tenant marker invalidates the account read itself.
-    # This check is outside the optional snapshot-identity fallback and precedes every other read/write.
-    Assert-BecSnapshotTenant $mailbox[0]
-    $snapshotAnchor = $null
-    $snapshotObservations = $null
-    try { $snapshotAnchor = Get-BecSnapshotAnchor $mailbox[0] $account }
-    catch [Management.Automation.PipelineStoppedException], [OperationCanceledException] { throw }
-    catch { Write-Warning 'Current mailbox observations are unavailable because native mailbox identity could not be verified.' }
-    if ($null -ne $snapshotAnchor) {
-        $snapshotObservations = Get-BecSnapshotObservations $mailbox[0] $snapshotAnchor $mailboxObservedAt
-    }
-    $parent = Join-Path $plan.root "exchange-exports/$TenantId"
-    $directory = Join-Path $parent ([guid]::NewGuid().ToString())
-    $directoryCreated = $false
-    $manifest = [ordered]@{
-        schema = 'bec.exchange-powershell/v3'; tenant = $plan.tenant; directory_id = $plan.tenant; planned_at = $plan.planned_at
-        scope = [ordered]@{account = $account; start = $plan.start; end = $plan.end
-                           operator = $plan.operator; connection = $plan.connection}
-        reads = [ordered]@{}; files = @()
-    }
-    foreach ($chunk in $chunks) {
-        $plannedFrom = [DateTimeOffset]::Parse($chunk.Start, $dateFormat).UtcDateTime
-        $until = [DateTimeOffset]::Parse($chunk.End, $dateFormat).UtcDateTime
-        foreach ($direction in 'sent', 'received') {
-            Assert-BecConnection
-            $checked = [DateTime]::UtcNow
-            $cutoff = [datetime]::new($checked.Year, $checked.Month, $checked.Day, $checked.Hour,
-                $checked.Minute, 0, [DateTimeKind]::Utc).AddMinutes(1).AddDays(-90)
-            $from = $plannedFrom
-            if ($from -lt $cutoff) { $from = $cutoff }
-            if ($from -gt $until) { $from = $until }
-            $key = "$direction-$($chunk.Id)"
-            $outcome = [ordered]@{start = $from.ToString($stamp, $dateFormat); end = $chunk.End
-                                  checked_at = $checked.ToString($stamp, $dateFormat); status = 'unavailable'}
-            $manifest.reads[$key] = $outcome
-            if ($from -eq $until) { $outcome.status = 'retention'; continue }
-            $read = $commands['Get-MessageTraceV2']
-            if (-not $read) { continue }
-            while ($calls.Count -gt 0 -and $calls.Peek() -le $checked.AddMinutes(-5)) { $null = $calls.Dequeue() }
-            if ($serviceThrottled -or $calls.Count -ge 100) { $outcome.status = 'budget-limited'; continue }
-            # The authorized interval is half open. Request the last representable .NET instant inside it.
-            $parameters = @{ StartDate = $from; EndDate = $until.AddTicks(-1); ResultSize = $plan.limit
-                             ErrorAction = 'Stop'; WarningAction = 'Stop' }
-            if ($direction -eq 'sent') { $parameters['SenderAddress'] = $account }
-            else { $parameters['RecipientAddress'] = $account }
-            $calls.Enqueue($checked)
-            try {
-                $rows = @(& $read @parameters)
-            } catch [Management.Automation.PipelineStoppedException], [OperationCanceledException] {
-                throw
-            } catch {
-                $failure = $_
+$runJson = $planText | & $Python -I -m bec.run_index create
+if ($LASTEXITCODE -ne 0) { throw 'Could not create the local run before mailbox reads.' }
+$runDirectory = ConvertFrom-Json -InputObject $runJson -ErrorAction Stop
+if ($runDirectory -isnot [string] -or [string]::IsNullOrWhiteSpace($runDirectory)) {
+    throw 'The local run writer returned an invalid directory.'
+}
+Write-Host "Run results: $runDirectory"
+Write-Host 'When the run ends, open Run summary.pdf for mailbox status and report folders.'
+
+$runOutcome = 'failed'
+try {
+    foreach ($account in $plan.accounts) {
+        $null = $planText | & $Python -I -m bec.run_index begin --run $runDirectory --account $account
+        if ($LASTEXITCODE -ne 0) { throw 'Could not record the start of this mailbox in the run.' }
+        Assert-BecConnection
+        try { $mailbox = @(& $mailboxRead -Identity $account -ErrorAction Stop -WarningAction Stop) }
+        catch [Management.Automation.PipelineStoppedException], [OperationCanceledException] { throw }
+        catch { throw "Get-Mailbox could not verify $account in this session. No incident reads were made for this account." }
+        Assert-BecConnection
+        $mailboxObservedAt = [DateTime]::UtcNow.ToString($stamp, $dateFormat)
+        if ($mailbox.Count -ne 1 -or [string]$mailbox[0].PrimarySmtpAddress -ne $account -or
+            -not $mailbox[0].ExternalDirectoryObjectId) {
+            throw 'Could not verify one mailbox with that exact primary SMTP address. Stopping before incident reads.'
+        }
+        # A contradictory or unusable native tenant marker invalidates the account read itself.
+        # This check precedes any subsequent provider read or evidence write for this mailbox.
+        Assert-BecSnapshotTenant $mailbox[0]
+        $snapshotAnchor = $null
+        $snapshotObservations = $null
+        try { $snapshotAnchor = Get-BecSnapshotAnchor $mailbox[0] $account }
+        catch [Management.Automation.PipelineStoppedException], [OperationCanceledException] { throw }
+        catch { Write-Warning 'Current mailbox observations are unavailable because native mailbox identity could not be verified.' }
+        if ($null -ne $snapshotAnchor) {
+            $snapshotObservations = Get-BecSnapshotObservations $mailbox[0] $snapshotAnchor $mailboxObservedAt
+        }
+        $parent = Join-Path $plan.root "exchange-exports/$TenantId"
+        $directory = Join-Path $parent ([guid]::NewGuid().ToString())
+        $directoryCreated = $false
+        $manifest = [ordered]@{
+            schema = 'bec.exchange-powershell/v3'; tenant = $plan.tenant; directory_id = $plan.tenant; planned_at = $plan.planned_at
+            scope = [ordered]@{account = $account; start = $plan.start; end = $plan.end
+                               operator = $plan.operator; connection = $plan.connection}
+            reads = [ordered]@{}; files = @()
+        }
+        foreach ($chunk in $chunks) {
+            $plannedFrom = [DateTimeOffset]::Parse($chunk.Start, $dateFormat).UtcDateTime
+            $until = [DateTimeOffset]::Parse($chunk.End, $dateFormat).UtcDateTime
+            foreach ($direction in 'sent', 'received') {
                 Assert-BecConnection
-                $outcome.status = Get-BecReadFailure $failure
-                if ($outcome.status -eq 'throttled') { $serviceThrottled = $true }
-                continue
+                $checked = [DateTime]::UtcNow
+                $cutoff = [datetime]::new($checked.Year, $checked.Month, $checked.Day, $checked.Hour,
+                    $checked.Minute, 0, [DateTimeKind]::Utc).AddMinutes(1).AddDays(-90)
+                $from = $plannedFrom
+                if ($from -lt $cutoff) { $from = $cutoff }
+                if ($from -gt $until) { $from = $until }
+                $key = "$direction-$($chunk.Id)"
+                $outcome = [ordered]@{start = $from.ToString($stamp, $dateFormat); end = $chunk.End
+                                      checked_at = $checked.ToString($stamp, $dateFormat); status = 'unavailable'}
+                $manifest.reads[$key] = $outcome
+                if ($from -eq $until) { $outcome.status = 'retention'; continue }
+                $read = $commands['Get-MessageTraceV2']
+                if (-not $read) { continue }
+                while ($calls.Count -gt 0 -and $calls.Peek() -le $checked.AddMinutes(-5)) { $null = $calls.Dequeue() }
+                if ($serviceThrottled -or $calls.Count -ge 100) { $outcome.status = 'budget-limited'; continue }
+                # The authorized interval is half open. Request the last representable .NET instant inside it.
+                $parameters = @{ StartDate = $from; EndDate = $until.AddTicks(-1); ResultSize = $plan.limit
+                                 ErrorAction = 'Stop'; WarningAction = 'Stop' }
+                if ($direction -eq 'sent') { $parameters['SenderAddress'] = $account }
+                else { $parameters['RecipientAddress'] = $account }
+                $calls.Enqueue($checked)
+                try {
+                    $rows = @(& $read @parameters)
+                } catch [Management.Automation.PipelineStoppedException], [OperationCanceledException] {
+                    throw
+                } catch {
+                    $failure = $_
+                    Assert-BecConnection
+                    $outcome.status = Get-BecReadFailure $failure
+                    if ($outcome.status -eq 'throttled') { $serviceThrottled = $true }
+                    continue
+                }
+                Assert-BecConnection
+                if ($rows.Count -gt $plan.limit) { throw 'Exchange returned more records than requested. Stopping.' }
+                try { $json = ConvertTo-Json -InputObject $rows -Depth 32 -Compress -WarningAction Stop }
+                catch [Management.Automation.PipelineStoppedException], [OperationCanceledException] { throw }
+                catch { $outcome.status = 'serialization-failed'; continue }
+                $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))
+                $captureArgs = @('--direction', $direction, '--chunk', $chunk.Id, '--directory', $directory,
+                                 '--tenant', $plan.tenant, '--account', $account, '--start', $outcome.start, '--end', $chunk.End)
+                if (-not $directoryCreated) { $captureArgs += '--new-directory' }
+                Assert-BecConnection
+                $resultText = $encoded | & $Python -I -m bec.exchange save-trace @captureArgs
+                if ($LASTEXITCODE -eq 3) { $outcome.status = 'boundary-overlap'; continue }
+                if ($LASTEXITCODE -eq 130) { throw [OperationCanceledException]::new('Trace preservation was canceled.') }
+                if ($LASTEXITCODE -ne 0) { throw 'Stopped. The trace page could not be verified and saved.' }
+                $directoryCreated = $true
+                $page = $resultText | ConvertFrom-Json
+                $manifest.files += @{dataset = 'trace'; path = "$key.json"; sha256 = $page.sha256}
+                $outcome.status = $page.status
             }
-            Assert-BecConnection
-            if ($rows.Count -gt $plan.limit) { throw 'Exchange returned more records than requested. Stopping.' }
-            try { $json = ConvertTo-Json -InputObject $rows -Depth 32 -Compress -WarningAction Stop }
-            catch [Management.Automation.PipelineStoppedException], [OperationCanceledException] { throw }
-            catch { $outcome.status = 'serialization-failed'; continue }
-            $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))
-            $captureArgs = @('--direction', $direction, '--chunk', $chunk.Id, '--directory', $directory,
-                             '--tenant', $plan.tenant, '--account', $account, '--start', $outcome.start, '--end', $chunk.End)
-            if (-not $directoryCreated) { $captureArgs += '--new-directory' }
-            Assert-BecConnection
-            $resultText = $encoded | & $Python -I -m bec.exchange save-trace @captureArgs
-            if ($LASTEXITCODE -eq 3) { $outcome.status = 'boundary-overlap'; continue }
-            if ($LASTEXITCODE -ne 0) { throw 'Stopped. The trace page could not be verified and saved.' }
-            $directoryCreated = $true
-            $page = $resultText | ConvertFrom-Json
-            $manifest.files += @{dataset = 'trace'; path = "$key.json"; sha256 = $page.sha256}
-            $outcome.status = $page.status
         }
-    }
-    Assert-BecConnection
-    if (-not $directoryCreated) {
-        [void][IO.Directory]::CreateDirectory($parent)
-        $null = New-Item -ItemType Directory -Path $directory -ErrorAction Stop
-    }
-    $manifest['captured_at'] = [DateTime]::UtcNow.ToString($stamp, $dateFormat)
-    $bundle = Join-Path $directory 'bundle.json'
-    [IO.File]::WriteAllText($bundle, (ConvertTo-Json -InputObject $manifest -Depth 8), [Text.UTF8Encoding]::new($false))
-    $snapshotPath = $null
-    $snapshotHash = $null
-    if ($null -ne $snapshotObservations) {
         Assert-BecConnection
-        $traceHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($bundle))).ToLowerInvariant()
-        $snapshot = [ordered]@{ schema = 'bec.exchange-snapshot/v1'; tenant = $plan.tenant; directory_id = $plan.tenant
-            scope = $manifest.scope; mailbox = $snapshotAnchor; captured_at = [DateTime]::UtcNow.ToString($stamp, $dateFormat)
-            trace_receipt_sha256 = $traceHash; evidence_class = 'allowlisted-source-properties'; observations = $snapshotObservations }
-        $snapshotJson = ConvertTo-Json -InputObject $snapshot -Depth 12 -Compress -WarningAction Stop
-        $snapshotEncoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($snapshotJson))
-        Assert-BecConnection
-        $savedSnapshot = $snapshotEncoded | & $Python -I -m bec.exchange_snapshot --directory $directory
-        if ($LASTEXITCODE -ne 0) { throw 'Current mailbox observations failed validation. No snapshot bytes were saved.' }
-        Assert-BecConnection
-        $snapshotReceipt = $savedSnapshot | ConvertFrom-Json
-        if ($snapshotReceipt.sha256 -isnot [string] -or $snapshotReceipt.sha256 -cnotmatch '^[a-f0-9]{64}$' -or
-            $snapshotReceipt.path -isnot [string] -or [string]::IsNullOrWhiteSpace($snapshotReceipt.path)) {
-            throw 'The snapshot writer did not return a valid saved path and byte hash.'
+        if (-not $directoryCreated) {
+            [void][IO.Directory]::CreateDirectory($parent)
+            $null = New-Item -ItemType Directory -Path $directory -ErrorAction Stop
         }
-        $snapshotPath = $snapshotReceipt.path
-        $snapshotHash = $snapshotReceipt.sha256
-        Write-Host "Current mailbox snapshot saved in $snapshotPath with SHA-256 $snapshotHash"
+        $manifest['captured_at'] = [DateTime]::UtcNow.ToString($stamp, $dateFormat)
+        $bundle = Join-Path $directory 'bundle.json'
+        [IO.File]::WriteAllText($bundle, (ConvertTo-Json -InputObject $manifest -Depth 8), [Text.UTF8Encoding]::new($false))
+        $snapshotPath = $null
+        $snapshotHash = $null
+        if ($null -ne $snapshotObservations) {
+            Assert-BecConnection
+            $traceHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($bundle))).ToLowerInvariant()
+            $snapshot = [ordered]@{ schema = 'bec.exchange-snapshot/v1'; tenant = $plan.tenant; directory_id = $plan.tenant
+                scope = $manifest.scope; mailbox = $snapshotAnchor; captured_at = [DateTime]::UtcNow.ToString($stamp, $dateFormat)
+                trace_receipt_sha256 = $traceHash; evidence_class = 'allowlisted-source-properties'; observations = $snapshotObservations }
+            $snapshotJson = ConvertTo-Json -InputObject $snapshot -Depth 12 -Compress -WarningAction Stop
+            $snapshotEncoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($snapshotJson))
+            Assert-BecConnection
+            $savedSnapshot = $snapshotEncoded | & $Python -I -m bec.exchange_snapshot --directory $directory
+            if ($LASTEXITCODE -eq 130) { throw [OperationCanceledException]::new('Snapshot preservation was canceled.') }
+            if ($LASTEXITCODE -ne 0) { throw 'Current mailbox observations failed validation. No snapshot bytes were saved.' }
+            Assert-BecConnection
+            $snapshotReceipt = $savedSnapshot | ConvertFrom-Json
+            if ($snapshotReceipt.sha256 -isnot [string] -or $snapshotReceipt.sha256 -cnotmatch '^[a-f0-9]{64}$' -or
+                $snapshotReceipt.path -isnot [string] -or [string]::IsNullOrWhiteSpace($snapshotReceipt.path)) {
+                throw 'The snapshot writer did not return a valid saved path and byte hash.'
+            }
+            $snapshotPath = $snapshotReceipt.path
+            $snapshotHash = $snapshotReceipt.sha256
+            Write-Verbose "Current mailbox snapshot saved in $snapshotPath with SHA-256 $snapshotHash"
+        }
+        Write-Verbose "Local Exchange export for $account saved in $directory"
+        $offlineArgs = @('--root', $plan.root, 'offline', '--bundle', $bundle, '--tenant', $plan.tenant,
+            '--directory-id', $plan.tenant, '--user', $account, '--start', $plan.start, '--end', $plan.end, '--review-package')
+        if ($snapshotPath) { $offlineArgs += @('--exchange-snapshot', $snapshotPath, '--snapshot-sha256', $snapshotHash) }
+        $offlineArgs += @('--run-directory', $runDirectory)
+        $planText | & $Python -I -m bec @offlineArgs
+        if ($LASTEXITCODE -eq 130) { throw [OperationCanceledException]::new('Mailbox packaging was canceled.') }
+        if ($LASTEXITCODE -notin 0, 2) { throw 'The mailbox case or report could not be verified and saved.' }
+        if ($LASTEXITCODE -eq 2) { $result = 2 }
     }
-    Write-Host "Local Exchange export for $account saved in $directory"
-    $offlineArgs = @('--root', $plan.root, 'offline', '--bundle', $bundle, '--tenant', $plan.tenant,
-        '--directory-id', $plan.tenant, '--user', $account, '--start', $plan.start, '--end', $plan.end, '--review-package')
-    if ($snapshotPath) { $offlineArgs += @('--exchange-snapshot', $snapshotPath, '--snapshot-sha256', $snapshotHash) }
-    & $Python -I -m bec @offlineArgs
-    if ($LASTEXITCODE -notin 0, 2) { exit $LASTEXITCODE }
-    if ($LASTEXITCODE -eq 2) { $result = 2 }
+    $runOutcome = 'completed'
+} catch [Management.Automation.PipelineStoppedException], [OperationCanceledException] {
+    $runOutcome = 'canceled'
+    $result = 130
+} finally {
+    $null = $planText | & $Python -I -m bec.run_index close --run $runDirectory --outcome $runOutcome
+    $closeStatus = $LASTEXITCODE
+    if ($runOutcome -eq 'completed') {
+        if ($closeStatus -notin 0, 2) { throw 'Could not finish the run index. Check the saved mailbox status.' }
+        if ($closeStatus -eq 2) { $result = 2 }
+    } elseif ($runOutcome -eq 'canceled') {
+        Write-Warning 'The run was canceled. Open Run summary.pdf for the last recorded mailbox status.'
+    }
 }
 exit $result
