@@ -472,7 +472,7 @@ def _coverage_text(coverage):
     return paragraphs
 
 
-def package_case(case_dir, output_dir, *, components=None):
+def package_case(case_dir, output_dir, *, components=None, run_plan=None):
     """Return a fresh per-case acquisition directory without modifying the case.
 
     components is only package_inputs.PackageInputs or None. Source-specific
@@ -583,13 +583,21 @@ def package_case(case_dir, output_dir, *, components=None):
     findings = _findings(observations)
     snapshot.check_unchanged()
     _components_unchanged(watched_components)
-    account_folder = _account_folder(case.meta["user"])
-    parent = output_root / safe_name(case.tenant) / safe_name(case.id) / account_folder
+    package_id = _acquisition_id(datetime.now(UTC), uuid.uuid4().hex)
+    if run_plan is None:
+        account_folder = _account_folder(case.meta["user"])
+        parent = output_root / safe_name(case.tenant) / safe_name(case.id) / account_folder
+        target = parent / package_id
+    else:
+        from .run_index import package_destination
+
+        if len(receipts) != 1:
+            raise CaseError("A run mailbox package requires its single verified capture receipt.")
+        target = package_destination(output_root, run_plan, case, receipts[0])
+        parent = target.parent
     if parent == case.path or parent.is_relative_to(case.path):
         raise CaseError("Package acquisition hierarchy must remain outside the saved case.")
     safe_path(parent)
-    package_id = _acquisition_id(datetime.now(UTC), uuid.uuid4().hex)
-    target = parent / package_id
     if os.name == "nt" and any(len(str(target / relative).encode("utf-16-le")) // 2 > 240 for relative in (
             *originals, *(source["display_csv"] for source in sources), "raw/coverage.display.csv", "manifest.json")):
         raise CaseError("Choose a shorter local output root so package paths fit within 240 characters on Windows.")
@@ -617,7 +625,7 @@ def package_case(case_dir, output_dir, *, components=None):
             "Returned or empty records do not prove complete access, ingestion, retention, absence, maliciousness or remediation.",
             "Original bytes are unchanged source exports or reserialized source objects, not authenticated provider wire responses.",
             "CSV/XLSX/PDF are display copies. CSV formula-like text is prefixed with an apostrophe; display controls and long text are normalized.",
-            "The PDF uses standard fonts and substitutes unsupported characters. Unicode originals, UTF-8 CSVs and XLSX retain the source text."]
+            "The PDF uses standard fonts and displays unsupported characters as [U+XXXX] code points. Unicode originals, UTF-8 CSVs and XLSX retain the source text."]
         summary_rows = [[key, value] for key, value in scope.items()] + [["package_id", package_id],
             ["source_files", len(sources)], ["observations", len(observations)], ["coverage_gaps", has_gaps]] + [["Interpretation limit", text] for text in limits]
         coverage_keys = ("source", "dataset", "status", "id", "direction", "requested_start", "requested_end",
@@ -657,28 +665,11 @@ def package_case(case_dir, output_dir, *, components=None):
             dict(name="Source references", columns=["Evidence ID", "Source ID", "Original alias", "SHA-256", "Native locator", "Zero-based record index", "Receipt file", "Receipt SHA-256", "Read ID"],
                  rows=reference_rows, evidence_columns=(0,))]
         write_workbook(stage / "triage.xlsx", tables, {entry["id"]: index + 2 for index, entry in enumerate(evidence)})
-        ranked = sorted(findings, key=lambda finding: (finding["assessment"] == "unassessed source observations", finding["id"]))
-        main_gaps = sorted([entry for entry in coverage if entry["status"] not in {"collected", "returned"}],
-                           key=lambda entry: entry["status"] not in {"denied", "access-denied", "partial", "at-limit", "excluded"})
-        first = observations[:200]
-        sections = [("Case scope", [f"{case.id} | {case.meta['user']} | tenant {case.tenant}",
-                     f"Requested UTC {scope['start']} to {scope['end']} (end excluded). {len(observations)} admitted observations."]),
-            ("Priority review leads", [f"{finding['id']} | {display_text(finding['title'], 90)} | {finding['evidence_ids'][0]} | "
-                + display_text(json.dumps({**finding['observed_outcome'], **finding['observed_properties']}, ensure_ascii=False, sort_keys=True), 120) for finding in ranked[:3]] or ["No admitted source observations support a review lead."]),
-            ("Main coverage gaps", [display_text(entry["detail"], 120) for entry in main_gaps[:3]] or ["No additional source-declared gaps; this is not proof of complete coverage."]),
-            ("Finding rationale and native outcomes", [f"{finding['id']} | {finding['evidence_ids'][0]} | {finding['title']}. "
-                f"{finding['rationale']} Outcome: " + display_text(json.dumps(finding['observed_outcome'], ensure_ascii=False, sort_keys=True), 280)
-                + ". Observed properties: " + display_text(json.dumps(finding['observed_properties'], ensure_ascii=False, sort_keys=True), 280)
-                + f". {len(finding['evidence_ids'])} source reference(s); all are linked in findings.json and the Findings worksheet."
-                for finding in ranked[:200]]),
-            ("Source coverage", _coverage_text(coverage)),
-            ("Evidence observations", [f"{row['evidence_id']} | {row['finding_id']} | {row['kind']} | {row['utc']} | {row['dataset']} | "
-                + display_text(row['operation'], 180) for row in first]),
-            ("Display limits", limits + [f"This PDF shows the first {len(first)} of {len(observations)} observations and up to 200 prioritized finding summaries. The workbook, CSVs and JSON contain the complete admitted observation and finding indexes."])]
-        pdf_ids = {row["evidence_id"] for row in first} | {finding["evidence_ids"][0] for finding in ranked[:200]}
-        references = [(entry["id"], f"{entry['file']} | SHA-256 {entry['sha256']} | {entry['locator']} | native ID {display_text(entry['native_id'], 256)}")
-                      for entry in evidence if entry["id"] in pdf_ids]
-        write_pdf(stage / "investigation.pdf", "BEC investigation evidence package", sections, references)
+        from .mailbox_report import build_mailbox_report, native_snapshot_rows
+        sections, references = build_mailbox_report(scope, observations, coverage, findings, evidence, limits,
+            coverage_details=_coverage_text(coverage), native_rows=native_snapshot_rows(sources, evidence, originals))
+        write_pdf(stage / "investigation.pdf", "Mailbox investigation review", sections, references,
+                  subtitle="Current settings, dated activity and the gaps that limit interpretation.")
         _write(stage / "README.txt", ("BEC scoped evidence package\n\n" + "\n".join(limits) +
             "\n\nStart with investigation.pdf and triage.xlsx. Source CSVs under raw/ are display projections unless their filename ends .original.csv. "
             "Exact non-CSV inputs are under originals/. Evidence IDs resolve through evidence.json; all file hashes are in manifest.json and SHA256SUMS.txt.\n").encode())

@@ -131,7 +131,7 @@ class OperatorBoundary(unittest.TestCase):
         self.assertIn("Join-Path $PSScriptRoot 'bec/data/Invoke-BEC.ps1'", launcher)
         self.assertIn("& $adapter -Python $python @PSBoundParameters", launcher)
         self.assertNotIn("Search-UnifiedAuditLog", launcher)
-        self.assertIn("$planText = & $Python -I -m bec.exchange plan-session --mailbox-state @scopeArgs", source)
+        self.assertIn("$planText = & $Python -I -m bec.exchange plan-session --mailbox-state --run-layout @scopeArgs", source)
         self.assertEqual(set(re.findall(r"'(Get-[A-Za-z0-9]+)' = \(Get-BecCommandPin \$sourceModule", source)),
                          {"Get-Mailbox", "Get-MessageTraceV2", "Get-InboxRule", "Get-MailboxPermission",
                           "Get-RecipientPermission"})

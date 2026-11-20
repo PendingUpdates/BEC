@@ -28,7 +28,7 @@ To pin an independently known tenant GUID, append the optional `-TenantId $Custo
 .\Invoke-BEC.ps1 -Accounts $AffectedAccount -StartUtc $StartUtc -EndUtc $EndUtc
 ```
 
-One case is written per mailbox. `-CaseRoot` selects a protected local directory. Cases default to `~/BEC-Cases/TENANT/CASE_ID`, Exchange exports to `~/BEC-Cases/exchange-exports/TENANT`, and analyst packages to `~/BEC-Cases/review-packages`. The console prints the PDF and workbook paths. Use `bec microsoft --help` for launcher help. With a wheel installed in an activated virtual environment, use its adapter in the connected PowerShell window.
+After confirmation the console prints one **Run results** directory for all named mailboxes. Open **Run summary.pdf**, then the mailbox folder listed beside the account. If collection stops, the index shows which reports were saved and which mailboxes still lack a recorded result. The default run directory is `~/BEC-Cases/Runs/<UTC-run-id>/`. One underlying case is retained per mailbox at `~/BEC-Cases/TENANT/CASE_ID`, and the original Exchange captures are under `~/BEC-Cases/exchange-exports/TENANT`. Use `-CaseRoot` to select a protected local case store. Use `bec microsoft --help` for launcher help. With a wheel installed in an activated virtual environment, use its adapter in the connected PowerShell window.
 
 ```powershell
 & (bec microsoft --adapter) -Python (Get-Command python -CommandType Application).Source

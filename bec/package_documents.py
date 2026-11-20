@@ -1,8 +1,8 @@
 """Small, dependency-free XLSX and PDF documents with inert text and internal links."""
 import io
 import re
-import textwrap
 import zipfile
+from dataclasses import dataclass
 from xml.sax.saxutils import escape, quoteattr
 
 from .storage import CaseError
@@ -108,78 +108,195 @@ def write_workbook(path, tables, evidence_locations):
         stream.write(buffer.getvalue())
 
 
+def _pdf_display(text):
+    """Use reversible code-point labels for characters absent from WinAnsi."""
+    result = []
+    for char in display_text(text):
+        try:
+            char.encode("cp1252")
+        except UnicodeEncodeError:
+            result.append(f"[U+{ord(char):04X}]")
+        else:
+            result.append(char)
+    return "".join(result)
+
+
 def _pdf_text(text):
-    raw = display_text(text).encode("cp1252", errors="replace")
+    raw = _pdf_display(text).encode("cp1252")
     return b"(" + b"".join(b"\\" + bytes([ch]) if ch in b"\\()" else
                               f"\\{ch:03o}".encode() if ch < 32 or ch >= 127 else bytes([ch]) for ch in raw) + b")"
 
 
-def write_pdf(path, title, sections, references):
-    """Write a real paginated PDF; reference links are /Dest page destinations only.
+@dataclass(frozen=True)
+class PdfParagraph:
+    """Display text with explicit generated reference targets, never source URLs."""
+    text: str
+    style: str = "body"
+    links: tuple[str, ...] = ()
+    keep_with_next: bool = False
 
-    sections is (heading, text-lines) pairs. references is (generated ID, text)
-    pairs. The standard-font display substitutes unsupported characters; exact
-    Unicode text remains in the UTF-8 CSVs, workbook and original evidence.
+
+@dataclass(frozen=True)
+class PdfSection:
+    heading: str
+    paragraphs: tuple
+    page_break: bool = False
+
+
+def _text_width(text, size):
+    """Conservative Helvetica/Helvetica-Bold width bound, in points.
+
+    The bound is deliberately shared by both fonts. Extended WinAnsi characters
+    get a full em; long unbroken names therefore wrap without a font dependency.
     """
-    def wrap(text):
-        return textwrap.wrap(display_text(text), 55, replace_whitespace=True,
-                             break_long_words=True, break_on_hyphens=False) or [""]
+    total = 0
+    for char in _pdf_display(text):
+        if char in " ilI.,:;!'|`":
+            total += 300
+        elif char in "ftr()[]{}":
+            total += 450
+        elif char in "mwMW@%&":
+            total += 1000
+        elif "A" <= char <= "Z":
+            total += 800
+        elif "a" <= char <= "z":
+            total += 650
+        elif ord(char) < 127:
+            total += 650
+        else:
+            total += 1000
+    return total * size / 1000
 
-    blocks = [[(title, True, None)], [(line, False, None) for line in wrap(
-        "Read-only evidence package. See manifest.json for hashes and source limits.")]]
-    for heading, paragraphs in sections:
-        block = [("", False, None), (heading, True, None)]
-        if paragraphs:
-            block.extend((line, False, None) for line in wrap(paragraphs[0]))
-        blocks.append(block)
-        blocks.extend([(line, False, None) for line in wrap(paragraph)] for paragraph in paragraphs[1:])
-    index_header = [("", False, None), ("Evidence reference index", True, None)]
-    for identifier, text in references:
-        block = [(line, False, identifier if index == 0 else None)
-                 for index, line in enumerate(wrap(f"{identifier} | {display_text(text)}"))]
-        blocks.append(index_header + block)
-        index_header = []
-    if index_header:
-        blocks.append(index_header)
-    per_page = 48
-    pages = [[]]
-    for block in blocks:
-        if len(block) <= per_page and pages[-1] and len(pages[-1]) + len(block) > per_page:
+
+def _wrap_pdf(text, size, width=524):
+    words = _pdf_display(text).split()
+    lines, line = [], ""
+    for word in words:
+        if line and _text_width(line + " " + word, size) <= width:
+            line += " " + word
+            continue
+        if line:
+            lines.append(line)
+            line = ""
+        for char in word:
+            if line and _text_width(line + char, size) > width:
+                lines.append(line)
+                line = ""
+            line += char
+    return [*lines, line] if line else lines or [""]
+
+
+def write_pdf(path, title, sections, references, *,
+              subtitle="Read-only evidence package. See manifest.json for hashes and source limits.",
+              reference_heading="Evidence reference index"):
+    """Write an inert PDF with section bookmarks and internal evidence links.
+
+    Existing (heading, paragraphs) section pairs remain supported. PdfSection can
+    start a page; PdfParagraph adds a subheading, note, or explicit evidence links.
+    Ordinary strings stay literal. references contains generated (ID, text) pairs;
+    reference_heading=None suppresses the index for a run-level navigation report.
+    Unsupported font characters appear as [U+XXXX]. Unicode originals remain in
+    the UTF-8 CSVs, workbook and original evidence.
+    """
+    styles = {"title": (22, 28, True), "heading": (15, 20, True),
+              "subheading": (11, 15, True), "body": (10.5, 14.5, False),
+              "note": (9, 12.5, False)}
+    blocks, bookmarks = [], []
+
+    def paragraph(value, *, style="body", anchor=None):
+        value = value if isinstance(value, PdfParagraph) else PdfParagraph(str(value), style)
+        if value.style not in styles:
+            raise CaseError("Unknown PDF paragraph style.")
+        size, leading, bold = styles[value.style]
+        lines = _wrap_pdf(value.text, size)
+        return [(text, size, leading, bold, anchor if index == 0 else None, value.links)
+                for index, text in enumerate(lines)]
+
+    blocks.append((paragraph(title, style="title"), False, 0))
+    if subtitle:
+        blocks.append((paragraph(subtitle, style="note"), False, 3))
+    for index, section in enumerate(sections):
+        if not isinstance(section, PdfSection):
+            section = PdfSection(section[0], tuple(section[1]))
+        anchor = f"section-{index}"
+        bookmarks.append((section.heading, anchor))
+        head = paragraph(section.heading, style="heading", anchor=anchor)
+        items = list(section.paragraphs)
+        # Keep a section title with its first paragraph; a subheading with its body.
+        if items:
+            head += paragraph(items.pop(0))
+        blocks.append((head, section.page_break, 14))
+        while items:
+            item = items.pop(0)
+            block = paragraph(item)
+            while isinstance(item, PdfParagraph) and (item.keep_with_next or item.style == "subheading") and items:
+                item = items.pop(0)
+                block += paragraph(item)
+            blocks.append((block, False, 7))
+    if reference_heading is not None:
+        anchor = "reference-index"
+        bookmarks.append((reference_heading, anchor))
+        heading = paragraph(reference_heading, style="heading", anchor=anchor)
+        refs = list(references)
+        if not refs:
+            heading += paragraph("No record-level evidence references are present in this document.", style="note")
+        for index, (identifier, text) in enumerate(refs):
+            block = paragraph(f"{identifier} | {display_text(text)}", style="note", anchor=identifier)
+            blocks.append(((heading if index == 0 else []) + block, index == 0, 7))
+        if not refs:
+            blocks.append((heading, False, 14))
+    pages, y = [[]], 792.0
+    for block, page_break, gap in blocks:
+        needed = sum(line[2] for line in block) + gap
+        if pages[-1] and (page_break or needed <= 730 and y - needed < 62):
             pages.append([])
+            y = 792.0
+        if pages[-1]:
+            y -= gap
         for line in block:
-            if len(pages[-1]) >= per_page:
+            if y - line[2] < 62:
                 pages.append([])
-            pages[-1].append(line)
+                y = 792.0
+            pages[-1].append((*line, y))
+            y -= line[2]
     if len(pages) > 5000:
         raise CaseError("Package PDF exceeds the 5,000-page limit.")
     objects = [None, None, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
                b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>"]
     page_numbers = [5 + 2 * index for index in range(len(pages))]
-    destinations = {}
-    for page_index, page in enumerate(pages):
-        for line_index, (_, _, identifier) in enumerate(page):
-            if identifier:
-                destinations[identifier] = (page_numbers[page_index], 790 - 14 * line_index)
+    destinations = {anchor: (page_numbers[index], y + size + 5) for index, page in enumerate(pages)
+                    for _, size, _, _, anchor, _, y in page if anchor}
     for page_index, page in enumerate(pages):
         commands, annotations = [], []
-        for line_index, (text, bold, anchor) in enumerate(page):
-            y = 790 - 14 * line_index
-            commands.append(b"BT /" + (b"F2" if bold else b"F1") + b" 9 Tf 44 " + str(y).encode() + b" Td " + _pdf_text(text) + b" Tj ET")
-            if not anchor:
-                for identifier in re.findall(r"\bE[0-9]{6}\b", text):
-                    if identifier in destinations:
-                        target, top = destinations[identifier]
-                        annotations.append(f"<< /Type /Annot /Subtype /Link /Rect [44 {y - 2} 566 {y + 10}] "
-                                           f"/Border [0 0 0] /Dest [{target} 0 R /FitH {top}] >>")
-                        break  # One unambiguous internal target per rendered line.
-        commands.append(b"BT /F1 9 Tf 44 32 Td " + _pdf_text(f"Page {page_index + 1} of {len(pages)} | Unicode originals retained separately") + b" Tj ET")
+        for text, size, _, bold, anchor, links, y in page:
+            color = b"0.12 0.23 0.32 rg" if bold else b"0.14 0.17 0.20 rg"
+            commands.append(color + b" BT /" + (b"F2" if bold else b"F1") + f" {size:g} Tf 44 {y:g} Td ".encode() + _pdf_text(text) + b" Tj ET")
+            for identifier in links:
+                # Link only an explicitly generated reference paragraph. Source
+                # names containing an E-ID remain ordinary unlinked text.
+                if identifier in destinations and re.search(r"\b" + re.escape(identifier) + r"\b", text):
+                    target, top = destinations[identifier]
+                    annotations.append(f"<< /Type /Annot /Subtype /Link /Rect [44 {y - 2:g} 568 {y + size:g}] "
+                                       f"/Border [0 0 0] /Dest [{target} 0 R /FitH {top:g}] >>")
+                    break  # A reference line has one unambiguous destination.
+        commands.append(b"0.75 0.80 0.83 RG 0.5 w 44 50 m 568 50 l S")
+        commands.append(b"0.35 0.39 0.42 rg BT /F1 8 Tf 44 32 Td " + _pdf_text(f"Page {page_index + 1} of {len(pages)} | Read-only review copy") + b" Tj ET")
         content = b"\n".join(commands)
         page_number = page_numbers[page_index]
         page_obj = (f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 842] "
                     f"/Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents {page_number + 1} 0 R "
                     + ("/Annots [" + " ".join(annotations) + "] " if annotations else "") + ">>")
         objects.extend([page_obj.encode(), b"<< /Length " + str(len(content)).encode() + b" >>\nstream\n" + content + b"\nendstream"])
-    objects[0] = b"<< /Type /Catalog /Pages 2 0 R >>"
+    if bookmarks:
+        outline = len(objects) + 1
+        objects.append(f"<< /Type /Outlines /First {outline + 1} 0 R /Last {outline + len(bookmarks)} 0 R /Count {len(bookmarks)} >>".encode())
+        for index, (heading, anchor) in enumerate(bookmarks, 1):
+            target, top = destinations[anchor]
+            siblings = (f" /Prev {outline + index - 1} 0 R" if index > 1 else "") + (f" /Next {outline + index + 1} 0 R" if index < len(bookmarks) else "")
+            objects.append(b"<< /Title " + _pdf_text(heading) + f" /Parent {outline} 0 R /Dest [{target} 0 R /FitH {top:g}]{siblings} >>".encode())
+        objects[0] = f"<< /Type /Catalog /Pages 2 0 R /Outlines {outline} 0 R >>".encode()
+    else:
+        objects[0] = b"<< /Type /Catalog /Pages 2 0 R >>"
     objects[1] = (f"<< /Type /Pages /Count {len(pages)} /Kids [" + " ".join(f"{number} 0 R" for number in page_numbers) + "] >>").encode()
     out = io.BytesIO()
     out.write(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")

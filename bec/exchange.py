@@ -110,12 +110,16 @@ def plan(args):
     if mailbox_state:
         question = ("Collect traces only for the retained interval and read the displayed current mailbox state?"
                     if first != start else "Collect the displayed message traces and current mailbox state?")
-    if reply(question + " Type yes to continue [no]:").casefold() != "yes":
-        raise CaseError("Investigation cancelled before collection.")
     result = dict(tenant=tenant, operator=operator, connection=str(connection_id), start=start, end=end,
                   planned_at=planned_at, chunks=chunks, accounts=accounts, root=str(root), limit=LIMIT)
     if mailbox_state:
         result["snapshot_schema"] = "bec.exchange-snapshot/v1"
+    if getattr(args, "run_layout", False):
+        from .run_index import validate_plan
+
+        validate_plan(result, case_root=root)
+    if reply(question + " Type yes to continue [no]:").casefold() != "yes":
+        raise CaseError("Investigation cancelled before collection.")
     return result
 
 
@@ -374,6 +378,7 @@ def main():
     actions = parser.add_subparsers(dest="action", required=True)
     scope = actions.add_parser("plan-session")
     scope.add_argument("--mailbox-state", action="store_true")
+    scope.add_argument("--run-layout", action="store_true")
     for key in ("tenant", "operator", "connection"):
         scope.add_argument("--" + key, required=True)
     for key in ("start", "end", "root"):

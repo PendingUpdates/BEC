@@ -1,8 +1,21 @@
 # Read an investigation package
 
-After a confirmed Exchange investigation, BEC prints the local paths to `investigation.pdf` and `triage.xlsx`. Start with the PDF for the main observations and gaps. In the workbook, follow a finding's evidence ID to the original file, SHA-256 and record location. Timeline rows describe dated events. Current-state rows describe what the operator could read at the observation time. A finding identifies evidence worth reviewing. It does not independently establish compromise.
+After you confirm an Exchange investigation, BEC prints one **Run results** folder. Open **Run summary.pdf** to find the folder for each requested mailbox and see whether its report was saved. If a run stops, check the last recorded status for each account. An unfinished mailbox has no verified report in the index.
 
-The default output is `~/BEC-Cases/review-packages/<tenant>/<case-id>/<account-label>--<hash>/<acquisition>/`. Each run creates a new acquisition. Use a protected, nonsynced local folder for case files, inputs and outputs.
+```text
+BEC-Cases/Runs/<UTC-run-id>/
+  Run summary.pdf
+  <mailbox-folder>/
+    investigation.pdf
+    triage.xlsx
+    raw/
+    originals/
+    manifest.json
+```
+
+Each mailbox PDF opens with a plain-English summary. Current inbox rules, mailbox-wide forwarding, delegation and dated activity are presented separately. The rule description names the recorded actions and destinations. The current Exchange projection includes selected conditions such as senders. It does not establish every condition, exception or an individual rule’s hidden status. The workbook and evidence index link observations to original files, hashes and record locations.
+
+Use a protected, nonsynced folder for case files, inputs and outputs. Existing `review-packages` acquisitions remain where they were created. Standalone `bec package` and `bec offline --review-package` retain the per-case acquisition layout for local rebuilds.
 
 | Package member | Use |
 | --- | --- |
@@ -14,6 +27,8 @@ The default output is `~/BEC-Cases/review-packages/<tenant>/<case-id>/<account-l
 
 The workbook uses literal text cells and internal navigation. The PDF uses static text and internal references. Display truncation or character substitution leaves the original evidence intact. The package builder checks source bytes and targets before writing and refuses to replace an earlier acquisition. If a scoped trace page has columns outside the approved metadata, the package lists its original hash and the reason for exclusion. A verified current-state snapshot can still be included. A legacy case-wide report by itself is insufficient evidence for a per-user package.
 
+If a PDF reader held the index open and BEC reports that an update is pending, close it and refresh the saved index locally. From the extracted Windows project folder, run `.\.venv\Scripts\bec.exe run-summary "$RunDirectory"` using the printed run directory. In an activated environment, use `bec run-summary "$RunDirectory"`.
+
 ## Rebuild locally
 
 Use the saved directory that contains `case.json`. The output root must be outside that directory. For a saved, scoped v2 or v3 Exchange trace case, this command needs no account credentials.
@@ -22,7 +37,7 @@ Use the saved directory that contains `case.json`. The output root must be outsi
 .\.venv\Scripts\bec.exe package $CaseDirectory --output $ReviewRoot
 ```
 
-To include the original current-state sidecar, add `--exchange-snapshot $SnapshotFile --snapshot-sha256 $RecordedHash`. Use the hash printed by BEC when it acquired the snapshot. The sidecar must also match the case's trace receipt, directory, mailbox, operator, connection and time window. Existing offline mailbox companions continue to use `snapshot-import` and `snapshot-view`.
+To include the original current-state sidecar, add `--exchange-snapshot $SnapshotFile --snapshot-sha256 $RecordedHash`. Use the original acquisition hash. In a saved mailbox package, the `exchange_current_state` source in `manifest.json` records this SHA-256. The sidecar must also match the case's trace receipt, directory, mailbox, operator, connection and time window. Existing offline mailbox companions continue to use `snapshot-import` and `snapshot-view`.
 
 ## Add an authorized offline source
 
