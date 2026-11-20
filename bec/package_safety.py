@@ -70,8 +70,15 @@ def read_bytes(path, limit=MAX_FILE_BYTES):
         after = os.fstat(stream.fileno())
     safe_path(path, exists=True)
     current = path.stat()
-    identity = lambda item: (item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns, item.st_ctime_ns)
-    if len(raw) > limit or identity(before) != identity(after) or identity(before) != identity(current):
+
+    def file_state(info):
+        return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns
+
+    # Windows Python can report creation time for stat(path) and change time for
+    # fstat(fd). Compare ctime within each API and file identity across both.
+    if (len(raw) != before.st_size or len(raw) > limit or
+            not file_state(expected) == file_state(before) == file_state(after) == file_state(current) or
+            expected.st_ctime_ns != current.st_ctime_ns or before.st_ctime_ns != after.st_ctime_ns):
         raise CaseError("Package source changed during its bounded read.")
     return raw
 

@@ -1,11 +1,13 @@
 """Offline package and document boundary checks. No incident data is used."""
 import contextlib
 import io
+import os
 import tempfile
 import unittest
 import uuid
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 from zipfile import ZipFile
 
@@ -54,6 +56,26 @@ class PackageControls(unittest.TestCase):
         self.assertEqual(read_bytes(path, len(data)), data)
         with self.assertRaises(CaseError):
             read_bytes(path, len(data) - 1)
+
+    def test_reader_checks_change_times_within_each_stat_api(self):
+        path = self.root / "bytes.dat"
+        path.write_bytes(b"abc")
+        actual_fstat = os.fstat
+        for changes in ((1, 1), (1, 2)):
+            increments = iter(changes)
+
+            def descriptor_state(fd):
+                info = actual_fstat(fd)
+                return SimpleNamespace(st_mode=info.st_mode, st_dev=info.st_dev, st_ino=info.st_ino,
+                                       st_size=info.st_size, st_mtime_ns=info.st_mtime_ns,
+                                       st_ctime_ns=info.st_ctime_ns + next(increments))
+
+            with self.subTest(changes=changes), patch("bec.package_safety.os.fstat", descriptor_state):
+                if changes[0] == changes[1]:
+                    self.assertEqual(read_bytes(path), b"abc")
+                else:
+                    with self.assertRaisesRegex(CaseError, "changed during"):
+                        read_bytes(path)
 
     def test_reserved_components_are_refused(self):
         for part in ("", "..", "CON", "lpt1.csv", "trailing.", "one/two", "one:two"):
