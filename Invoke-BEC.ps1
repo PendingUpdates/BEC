@@ -2,7 +2,7 @@
 # Run from the already connected Exchange Online PowerShell window.
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)][guid]$TenantId,
+    [guid]$TenantId,
     [string[]]$Accounts,
     [string]$StartUtc,
     [string]$EndUtc,

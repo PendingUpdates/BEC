@@ -25,8 +25,9 @@ def parser():
     p.add_argument("--version", action="version", version="BEC " + __version__)
     cmd = p.add_subparsers(dest="command", required=True)
     microsoft = cmd.add_parser("microsoft", help="start a read-only investigation in your connected PowerShell window",
-        description="In the connected PowerShell window, run ./Invoke-BEC.ps1 -TenantId YOUR-CUSTOMER-GUID "
-                    "from the BEC folder. Python prompts for affected accounts and writes each case report.")
+        description="In your connected PowerShell window, run ./Invoke-BEC.ps1 from the BEC folder. "
+                    "Review the tenant ID and operator, choose accounts and a UTC window, then confirm the trace reads. "
+                    "For a wheel install, use --adapter to locate the packaged launcher.")
     microsoft.add_argument("--adapter", action="store_true", help="print the installed PowerShell adapter path")
     offline = cmd.add_parser("offline", help="import an authorized local bundle and write the case report",
                              description="Analyze a local export bundle. Supply an existing case or a tenant, "
@@ -98,6 +99,22 @@ def summarize(case, overview):
     workspace = f"{overview['workspace_matches']} Workspace correlations | " if case.meta.get("google_workspace") else ""
     print(f"{overview['event_count']} incident events | {overview['findings']} findings | "
           f"{overview['mailbox_message_matches']} mailbox/message matches | {workspace}{overview['gaps']} telemetry gaps")
+    for capture in overview.get("exchange_coverage", []):
+        requested, queryable = capture["requested"], capture["queryable"]
+        print(f"  Requested UTC: {requested['start']} to {requested['end']} (end excluded)")
+        print(f"  Queryable UTC: {queryable['start']} to {queryable['end']} ({capture['queryable_basis']})")
+        if capture["aged_off_prefix"]:
+            gap = capture["aged_off_prefix"]
+            print(f"  [!] Older than 90-day retention: {gap['start']} to {gap['end']}")
+        for entry in capture["reads"]:
+            count = str(entry["records"]) if entry["records"] is not None else "unknown"
+            print(f"    {entry['id']}: {entry['start']} to {entry['end']} | {entry['outcome']} | "
+                  f"{count} preserved rows | limit {entry['result_limit']} | checked {entry['checked_at'] or 'unavailable (v2)'}")
+            if entry["aged_off_prefix"]:
+                gap = entry["aged_off_prefix"]
+                print(f"      [!] Rolling retention cutoff excluded {gap['start']} to {gap['end']}")
+        print("  [!] " + capture["audit_gap"])
+        print("  " + capture["caveat"])
     for gap in read(case.path / "telemetry_gaps.json")[:5]:
         print(f"  [!] {gap['dataset']}: {gap['reason']}")
     print(overview["output"])
@@ -264,8 +281,9 @@ def main(argv=None):
             if args.adapter:
                 print(ADAPTER)
                 return 0
-            print("In your connected PowerShell window, run ./Invoke-BEC.ps1 -TenantId YOUR-CUSTOMER-GUID "
-                  "from the extracted BEC folder. Enter the affected accounts at the prompt.", file=sys.stderr)
+            print("In your connected PowerShell window, run ./Invoke-BEC.ps1 from the extracted BEC folder. "
+                  "Review the tenant and operator, enter the affected accounts, choose a time window and confirm.",
+                  file=sys.stderr)
             return 1
         investigator_root = Path.home() / "BEC-Cases"
         root = (args.root or Path("cases")).resolve()

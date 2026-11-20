@@ -36,7 +36,19 @@ python3 -m venv .venv
 .venv/bin/bec --version
 ```
 
-On macOS or Ubuntu, use `.venv/bin/bec` for local analysis. Microsoft collection requires a platform, PowerShell and Exchange module combination supported by your organization and Microsoft. In a supported, already connected PowerShell window, use `./Invoke-BEC.ps1 -TenantId 'CUSTOMER-TENANT-GUID'`. [Exchange module requirements](https://learn.microsoft.com/en-us/powershell/exchange/exchange-online-powershell-v2?view=exchange-ps)
+On macOS or Ubuntu, use `.venv/bin/bec` for local analysis. Microsoft collection requires a platform, PowerShell and Exchange module combination supported by your organization and Microsoft. In a supported, already connected PowerShell window, use `./Invoke-BEC.ps1`. [Exchange module requirements](https://learn.microsoft.com/en-us/powershell/exchange/exchange-online-powershell-v2?view=exchange-ps)
+
+## Launch from the connected session
+
+From an installed source ZIP, run `.\Invoke-BEC.ps1` in the PowerShell window with your direct, interactive Exchange Online connection. The launcher uses the ZIP's `.venv` and co-shipped adapter. With a wheel installed in an activated virtual environment, invoke its adapter in that same window.
+
+```powershell
+& (bec microsoft --adapter) -Python (Get-Command python -CommandType Application).Source
+```
+
+BEC requires one verified session and displays its tenant GUID and operator. It does not sign in automatically or infer a customer label from an email domain. An optional `-TenantId 'CUSTOMER-TENANT-GUID'` must match the session. Enter the accounts and choose a UTC window, then confirm with **yes**. Confirmation defaults to no and **q** cancels. [Windows first use](../README.md#first-investigation-on-windows) · [Window and retention limits](investigations.md#investigate-microsoft-365-in-powershell)
+
+Live tenant operation remains unverified. Installation and command discovery do not establish that an operator's access, service retention or Windows script policy permits collection.
 
 ## What gets installed
 

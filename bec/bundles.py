@@ -8,6 +8,8 @@ from pathlib import Path, PureWindowsPath
 from .storage import CaseError, DATASETS
 
 EXCHANGE_SCHEMA = "bec.exchange-powershell/v2"
+EXCHANGE_SCHEMA_V3 = "bec.exchange-powershell/v3"
+EXCHANGE_SCHEMAS = (EXCHANGE_SCHEMA, EXCHANGE_SCHEMA_V3)
 
 
 def exchange_json(raw):
@@ -67,14 +69,17 @@ class ExportBundle:
         if not isinstance(manifest.get("tenant"), str) or not manifest["tenant"].strip():
             raise CaseError("Bundle manifest must identify its tenant.")
         schema = manifest.get("schema")
-        exchange = schema == EXCHANGE_SCHEMA
+        exchange = schema in EXCHANGE_SCHEMAS
         capture_fields = "reads" in manifest or {"scope", "captured_at"} <= manifest.keys()
         exchange_version = isinstance(schema, str) and schema.startswith("bec.exchange-powershell/")
         if not exchange and (capture_fields or exchange_version):
-            raise CaseError("Exchange capture import requires a trace-only v2 receipt.")
+            raise CaseError("Exchange capture import requires a trace-only v2 or v3 receipt.")
         if exchange:
             manifest = exchange_json(raw)
-        if exchange and set(manifest) != {"schema", "tenant", "directory_id", "files", "scope", "reads", "captured_at"}:
+        receipt_fields = {"schema", "tenant", "directory_id", "files", "scope", "reads", "captured_at"}
+        if schema == EXCHANGE_SCHEMA_V3:
+            receipt_fields.add("planned_at")
+        if exchange and set(manifest) != receipt_fields:
             raise CaseError("Unexpected fields in the Exchange trace receipt.")
         if exchange and not offline:
             raise CaseError("Use bec offline for a versioned Exchange PowerShell bundle.")
@@ -87,9 +92,12 @@ class ExportBundle:
         for entry in entries:
             if not isinstance(entry, dict) or entry.get("dataset") not in DATASETS:
                 raise CaseError("Each bundle entry must name a supported dataset.")
-            if exchange and (set(entry) != {"dataset", "path", "sha256"} or entry["dataset"] != "trace"
-                             or entry["path"] not in ("sent.json", "received.json")):
-                raise CaseError("Exchange receipts may list only the two scoped trace files.")
+            if exchange:
+                name = entry.get("path")
+                scoped_name = (name in ("sent.json", "received.json") if schema == EXCHANGE_SCHEMA else
+                               isinstance(name, str) and re.fullmatch(r"(?:sent|received)-0[1-9]\.json", name))
+                if set(entry) != {"dataset", "path", "sha256"} or entry["dataset"] != "trace" or not scoped_name:
+                    raise CaseError("Exchange receipts may list only their scoped trace files.")
             name = entry.get("path")
             if not isinstance(name, str) or not name.strip() or "\x00" in name:
                 raise CaseError("Each bundle entry must name an export file.")

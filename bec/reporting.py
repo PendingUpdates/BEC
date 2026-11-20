@@ -113,6 +113,8 @@ def report(case, manual=None):
                     workspace_matches=len(workspace_findings),
                     source_counts=dict(Counter(e["dataset"] for e in events)),
                     baseline_successes=dict(baseline), output=str(root / "timeline" / "timeline.html"))
+    if summary.get("exchange_coverage"):
+        overview["exchange_coverage"] = summary["exchange_coverage"]
     if account_only:
         overview["collection_scope"] = "Named account and related email evidence. Historical baseline excluded."
     save(root / "analysis_summary.json", overview)
