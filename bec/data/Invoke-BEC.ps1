@@ -51,7 +51,7 @@ if ($StartUtc) { $scopeArgs += @('--start', $StartUtc) }
 if ($EndUtc) { $scopeArgs += @('--end', $EndUtc) }
 if ($CaseRoot) { $scopeArgs += @('--root', $CaseRoot) }
 if ($Accounts) { $scopeArgs += '--accounts'; $scopeArgs += $Accounts }
-$planText = & $Python -I -m bec.exchange @scopeArgs
+$planText = & $Python -I -m bec.exchange plan @scopeArgs
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $plan = $planText | ConvertFrom-Json
 # PowerShell versions can coerce ISO strings to local DateTime objects during JSON decoding.
@@ -77,26 +77,18 @@ foreach ($account in $plan.accounts) {
     $directory = Join-Path $parent ([guid]::NewGuid().ToString())
     $null = New-Item -ItemType Directory -Path $directory -ErrorAction Stop
     $manifest = [ordered]@{
-        schema = 'bec.exchange-powershell/v1'; tenant = $plan.tenant; directory_id = $plan.tenant
+        schema = 'bec.exchange-powershell/v2'; tenant = $plan.tenant; directory_id = $plan.tenant
         scope = [ordered]@{account = $account; start = $plan.start; end = $plan.end
                            operator = $plan.operator; connection = $plan.connection}
         reads = [ordered]@{}; files = @()
     }
-    foreach ($key in 'sent', 'received', 'audit') {
+    foreach ($key in 'sent', 'received') {
         Assert-BecConnection
         $parameters = @{ StartDate = $from; EndDate = $until; ResultSize = $plan.limit; ErrorAction = 'Stop'
                          WarningAction = 'Stop' }
-        if ($key -eq 'audit') {
-            $read = $commands['Search-UnifiedAuditLog']
-            $dataset = 'ual'
-            $parameters['UserIds'] = $account
-            $parameters['Operations'] = [string[]]$plan.operations
-        } else {
-            $read = $commands['Get-MessageTraceV2']
-            $dataset = 'trace'
-            if ($key -eq 'sent') { $parameters['SenderAddress'] = $account }
-            else { $parameters['RecipientAddress'] = $account }
-        }
+        $read = $commands['Get-MessageTraceV2']
+        if ($key -eq 'sent') { $parameters['SenderAddress'] = $account }
+        else { $parameters['RecipientAddress'] = $account }
         if (-not $read) { $manifest.reads[$key] = 'unavailable'; continue }
         try {
             $rows = @(& $read @parameters)
@@ -107,16 +99,17 @@ foreach ($account in $plan.accounts) {
         Assert-BecConnection
         if ($rows.Count -gt $plan.limit) { throw 'Exchange returned more records than requested. Stopping.' }
         $file = "$key.json"
-        $path = Join-Path $directory $file
         try { $json = ConvertTo-Json -InputObject $rows -Depth 32 -Compress -WarningAction Stop }
         catch { $manifest.reads[$key] = 'serialization-failed'; continue }
-        [IO.File]::WriteAllText($path, $json, [Text.UTF8Encoding]::new($false))
-        $sha = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant()
-        $manifest.files += @{dataset = $dataset; path = $file; sha256 = $sha}
-        $manifest.reads[$key] = if ($rows.Count -eq 0) { 'empty' }
-                               elseif ($rows.Count -eq $plan.limit) { 'at-limit' }
-                               elseif ($key -eq 'audit') { 'bounded-audit' }
-                               else { 'returned' }
+        # Carry the exact serialization through stdin. Python validates the whole page before opening a file.
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))
+        $captureArgs = @('--direction', $key, '--directory', $directory, '--tenant', $plan.tenant,
+                         '--account', $account, '--start', $plan.start, '--end', $plan.end)
+        $resultText = $encoded | & $Python -I -m bec.exchange save-trace @captureArgs
+        if ($LASTEXITCODE -ne 0) { throw 'Stopped. The trace page could not be verified and saved.' }
+        $page = $resultText | ConvertFrom-Json
+        $manifest.files += @{dataset = 'trace'; path = $file; sha256 = $page.sha256}
+        $manifest.reads[$key] = $page.status
     }
     Assert-BecConnection
     $manifest['captured_at'] = [DateTimeOffset]::UtcNow.ToString('o')

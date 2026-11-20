@@ -14,7 +14,7 @@ py -3 -m venv .venv
 
 For an Exchange investigation, check the installed versions with `$PSVersionTable.PSVersion` and `Get-Module -ListAvailable ExchangeOnlineManagement | Select-Object Name, Version`. ExchangeOnlineManagement **3.10 or later requires PowerShell 7.6 or later**. Versions **3.7.0 through 3.9.2** support PowerShell 7.4 or later and provide the message trace cmdlet. Use the organization's approved module in the window where you signed in. [Microsoft module requirements](https://learn.microsoft.com/en-us/powershell/exchange/exchange-online-powershell-v2?view=exchange-ps) · [Message trace version requirement](https://learn.microsoft.com/en-us/exchange/monitoring/trace-an-email-message/message-trace-modern-eac)
 
-Windows execution-policy acceptance has not been verified for either launch path. The source ZIP launcher (`Invoke-BEC.ps1`) calls the installed adapter (`bec/data/Invoke-BEC.ps1`). The wheel launch path invokes that installed script directly. If Windows policy blocks either script, stop and follow your organization's approved process. [First investigation on Windows](../README.md#first-investigation-on-windows)
+Windows execution-policy acceptance has not been verified for either launch path. The source ZIP launcher (`Invoke-BEC.ps1`) calls the adapter shipped in that ZIP (`bec/data/Invoke-BEC.ps1`). The wheel launch path invokes the installed adapter directly. Use the Python package and adapter from the same version. If Windows policy blocks either script, stop and follow your organization's approved process. [First investigation on Windows](../README.md#first-investigation-on-windows)
 
 ## macOS
 

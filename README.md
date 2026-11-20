@@ -2,7 +2,7 @@
 
 ![BEC email investigation](docs/assets/BEC-Banner.gif)
 
-BEC is a command-line tool for investigating business email compromise. For Microsoft 365, an analyst uses their own authorized Exchange Online PowerShell session to read message traces and mailbox audit events for named accounts. Python builds a local timeline and links findings to the saved evidence. BEC can also analyze existing Microsoft, Defender email and Google Workspace exports.
+BEC is a command-line tool for investigating business email compromise. For Microsoft 365, an analyst uses their own authorized Exchange Online PowerShell session to read sent and received message traces for named accounts. The live adapter does not collect mailbox audit events or current inbox rules. Python builds a local timeline and links findings to the saved evidence. BEC can also analyze existing Microsoft, Defender email and Google Workspace exports.
 
 ## First investigation on Windows
 

@@ -1,7 +1,7 @@
 """Acquisition checkpoints and immutable raw-byte replay."""
 import json
 
-from .bundles import ExportBundle
+from .bundles import EXCHANGE_SCHEMA, ExportBundle
 from .evidence import evidence_references
 from .hunting import TABLES
 from .normalize import event_time, normalize, object_value, records, ual_body
@@ -52,11 +52,12 @@ def verify_export_files(bundle, tenant, directory_id, customer, microsoft, recei
             raw = path.read_bytes()
             if not raw.strip():
                 raise CaseError("Empty export file.")
-            rows = records(raw, dataset)
-            checked = rows if dataset in GOOGLE_APPS else (object_value(row) for row in rows)
-            check_record_binding(dataset, checked, tenant, directory_id, customer)
             if receipt:
-                receipt.check_file(name, raw, rows)
+                receipt.check_file(name, raw, directory_id)
+            else:
+                rows = records(raw, dataset)
+                checked = rows if dataset in GOOGLE_APPS else (object_value(row) for row in rows)
+                check_record_binding(dataset, checked, tenant, directory_id, customer)
         except (OSError, ValueError) as exc:
             reason = str(exc) if isinstance(exc, CaseError) else "Unreadable file or invalid UTF-8 JSON."
             raise CaseError(f"Invalid export {name}: {reason}") from exc
@@ -119,6 +120,20 @@ class Collection:
     def import_files(self, bundle, *, verified_hashes=None, receipt=None):
         bundle.check_binding(self.case.tenant, self.case.meta["directory_id"],
                              (self.case.meta.get("google_workspace") or {}).get("customer_id"))
+        if (bundle.manifest.get("schema") == EXCHANGE_SCHEMA) != (receipt is not None):
+            raise CaseError("An Exchange capture requires its validated receipt.")
+        manifest = self.case.manifest()
+        saved_receipts = manifest.get("exchange_receipts", [])
+        exchange_case = self.case.meta.get("collection_scope") == "named_account" or bool(saved_receipts)
+        if exchange_case != (receipt is not None):
+            raise CaseError("Use separate cases for Exchange captures and ordinary offline exports.")
+        if receipt and (any(item["dataset"] != "trace" or item["collector"] != "exchange_online_powershell"
+                            for item in manifest["artifacts"]) or
+                        any(read(self.case.receipt_path(sha)).get("schema") != EXCHANGE_SCHEMA for sha in saved_receipts)):
+            raise CaseError("Use a new trace-only case for this capture. Earlier evidence stays in its original case.")
+        if receipt and verified_hashes is None:
+            verified_hashes = verify_export_files(bundle, self.case.tenant, self.case.meta["directory_id"],
+                                                  None, True, receipt)
         self.mode("export")
         if verified_hashes is not None:
             self.update()  # An interrupted import must resume in export mode.
@@ -157,7 +172,7 @@ class Collection:
             if dataset not in completed and not any(q.get("dataset") == dataset and q["status"] == "collected" for q in self.state["queries"].values()):
                 reason = "No usable export supplied."
                 if receipt and dataset not in ("trace", "ual"):
-                    reason = f"{dataset} is outside Exchange PowerShell coverage. Supply an authorized export if available."
+                    reason = f"{dataset} is outside Exchange PowerShell coverage. Use a separate offline case for authorized exports."
                 self.state["queries"][key] = dict(dataset=dataset, status="gap", reason=reason)
             else:
                 self.state["queries"].pop(key, None)
