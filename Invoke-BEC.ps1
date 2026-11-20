@@ -11,7 +11,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $python = if ($IsWindows) { Join-Path $PSScriptRoot '.venv/Scripts/python.exe' }
           else { Join-Path $PSScriptRoot '.venv/bin/python' }
-$adapter = & $python -I -m bec microsoft --adapter
-if ($LASTEXITCODE -ne 0 -or -not $adapter) { throw 'Install BEC in the .venv under the extracted BEC folder.' }
+# Use the co-shipped adapter. An older installed launcher may still include audit collection.
+$adapter = Join-Path $PSScriptRoot 'bec/data/Invoke-BEC.ps1'
 & $adapter -Python $python @PSBoundParameters
 exit $LASTEXITCODE

@@ -4,7 +4,7 @@
 
 The command line creates a case under a tenant alias and unique case ID. The captured profile contains the tenant binding, time window and investigation limits. A process-level file lock serializes mutations to that case. Independent cases can run concurrently.
 
-Microsoft acquisition runs in the analyst's current Exchange Online PowerShell session. Tenant, connection and mailbox checks gate a fixed list of trace and audit reads. The adapter saves the first JSON representation of each returned result and a versioned scope, coverage and hash receipt. Python verifies the files against the receipt and the authorized account and UTC window before importing them. Google Workspace retains its own connector and per-query checkpoints. [Current operator guide](investigations.md)
+Microsoft acquisition runs in the analyst's current Exchange Online PowerShell session. Tenant, connection and mailbox checks gate sender and recipient trace reads. Python verifies the complete serialized page against the requested direction, account, native directory markers and UTC window before writing its original bytes. Receipt import verifies the same conditions and the file hash. The report records mailbox audit as uncollected. Google Workspace retains its own connector and per-query checkpoints. [Current operator guide](investigations.md)
 
 Local ingestion checks tenant markers, stores each unique page by SHA-256 and retains the query that retrieved it. An on-disk transaction reconciles interrupted raw-page writes. Duplicate pages keep every acquisition context, and failed or capped reads remain visible in the report.
 

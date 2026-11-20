@@ -108,7 +108,7 @@ class OperatorBoundary(unittest.TestCase):
         content = {"schema": EXCHANGE_SCHEMA, "tenant": tenant, "directory_id": tenant, "files": [],
             "scope": {"account": account, "start": start, "end": end, "operator": "analyst@example.invalid",
                       "connection": str(uuid.uuid4())}, "captured_at": end,
-            "reads": dict(sent="unavailable", received="unavailable", audit="denied-or-failed")}
+            "reads": dict(sent="unavailable", received="unavailable")}
         self.manifest.write_text(json.dumps(content))
         bundle = ExportBundle.load(self.manifest, offline=True)
         receipt = ExchangeReceipt.check(bundle, tenant, tenant, account, start, end)
@@ -124,9 +124,19 @@ class OperatorBoundary(unittest.TestCase):
     def test_adapter_static_read_allowlist(self):
         source = ADAPTER.read_text()
         self.assertEqual(set(re.findall(r"\$commands\['([^']+)'\]", source)),
-                         {"Get-Mailbox", "Get-MessageTraceV2", "Search-UnifiedAuditLog"})
+                         {"Get-Mailbox", "Get-MessageTraceV2"})
+        launcher = (ADAPTER.parents[2] / "Invoke-BEC.ps1").read_text()
+        self.assertIn("Join-Path $PSScriptRoot 'bec/data/Invoke-BEC.ps1'", launcher)
+        self.assertIn("& $adapter -Python $python @PSBoundParameters", launcher)
+        self.assertNotIn("Search-UnifiedAuditLog", launcher)
+        self.assertIn("$planText = & $Python -I -m bec.exchange plan @scopeArgs", source)
+        self.assertIn("foreach ($key in 'sent', 'received')", source)
+        self.assertIn("if ($key -eq 'sent') { $parameters['SenderAddress'] = $account }", source)
+        self.assertIn("else { $parameters['RecipientAddress'] = $account }", source)
+        self.assertIn("$encoded | & $Python -I -m bec.exchange save-trace", source)
+        self.assertEqual(re.findall(r"\[IO.File\]::WriteAllText\(([^,]+),", source), ["$bundle"])
         self.assertIn("ExchangeOnlineManagement\\Get-ConnectionInformation", source)
-        for term in ("Connect-ExchangeOnline", "Invoke-Expression", "Start-Process", "Get-InboxRule",
+        for term in ("Search-UnifiedAuditLog", "Connect-ExchangeOnline", "Invoke-Expression", "Start-Process", "Get-InboxRule",
                      "New-ComplianceSearch", "Invoke-RestMethod", "Invoke-WebRequest", "AccessToken"):
             self.assertNotIn(term, source)
         self.assertLess(source.index("$session = Get-BecSession"), source.index("& $mailboxRead"))

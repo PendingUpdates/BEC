@@ -16,7 +16,7 @@ From the extracted BEC folder, use the PowerShell window containing your single 
 
 One case is written per mailbox. `-CaseRoot` selects a protected local directory. By default cases go under `~/BEC-Cases/TENANT/CASE_ID` and versioned exports under `~/BEC-Cases/exchange-exports/TENANT`. The console prints the local export and report paths. `bec microsoft --help` explains the launcher. The Python executable cannot inherit the parent PowerShell connection. With a wheel installed in an activated virtual environment, use the packaged adapter in the same window: `& (bec microsoft --adapter) -Python (Get-Command python -CommandType Application).Source -TenantId $CustomerTenantId`.
 
-The adapter reads sent and received message traces separately and performs one actor-filtered audit read for selected mail activity and rule changes. Reports flag empty, failed and capped reads, missing Entra and Defender data and omitted inbox-rule state. For high volume, select a shorter explicit interval. An unverifiable session or mailbox stops incident reads. [Workload limits](security.md#microsoft-sources-and-limits)
+The adapter reads sent and received message traces separately. It verifies every row before saving a page. The interval includes the start and excludes the end. Mailbox audit is not collected. Reports flag empty, failed and capped reads, missing Entra and Defender data and omitted inbox-rule state. For high volume, select a shorter explicit interval. An unverifiable session or mailbox stops incident reads. [Workload limits](security.md#microsoft-sources-and-limits)
 
 ## Investigate Google Workspace
 
@@ -58,7 +58,7 @@ For Defender exports, use the exact table name as the dataset key. Supported tab
 
 Use the exact alias and native identifiers from the investigation. For Workspace files also pass `--google-customer-id`. For a case without a Microsoft directory binding, omit `--directory-id`. Use `bec offline --case CASE_ID --bundle FILE` to add evidence to an existing export case. The importer checks the listed files and their bindings before creating a new case.
 
-A PowerShell export includes per-read coverage and file hashes. For replay, supply the original tenant GUID as both `--tenant` and `--directory-id`, the primary account and the exact authorized UTC bounds. The evidence manifest records the preserved record bytes and the SHA-256 of the capture receipt.
+A v2 PowerShell export contains trace files, per-direction coverage and hashes. New capture imports refuse v1 receipts, audit claims and capture directories containing the old audit.json export. Keep previously saved cases for local verification, search and replay. Use a separate ordinary offline case for independently authorized audit exports. The importer refuses to mix ordinary exports and operator-session captures in one case. For replay, supply the original tenant GUID as both `--tenant` and `--directory-id`, the primary account and the exact authorized UTC bounds. The evidence manifest records the preserved record bytes and the SHA-256 of the capture receipt.
 
 ## Compare saved cases offline
 

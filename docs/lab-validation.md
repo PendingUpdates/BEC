@@ -72,7 +72,7 @@ Once the target is explicitly authorized, configure only the selected credential
 .\.venv\Scripts\python.exe -I scripts\validate_lab.py run --plan C:\IR\private\lab-plan.json --run-dir C:\IR\private\bec-lab-run-01
 ```
 
-No secret is a command-line argument. The runner records installed BEC/distribution versions, Python/module locations, exact command arguments, and actual return codes privately. It uses `python -I -m bec` for case creation, collection, verification, and local analysis. The historical Microsoft collector created tenant-side search jobs. The current adapter reads the audit log with a bounded cmdlet query.
+No secret is a command-line argument. The runner records installed BEC/distribution versions, Python/module locations, exact command arguments, and actual return codes privately. It uses `python -I -m bec` for case creation, collection, verification, and local analysis. The historical Microsoft collector created tenant-side search jobs. The current Exchange adapter collects sent and received message traces. It does not collect mailbox audit.
 
 ## Acceptance gates
 

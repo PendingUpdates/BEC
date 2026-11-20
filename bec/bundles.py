@@ -7,7 +7,22 @@ from pathlib import Path, PureWindowsPath
 
 from .storage import CaseError, DATASETS
 
-EXCHANGE_SCHEMA = "bec.exchange-powershell/v1"
+EXCHANGE_SCHEMA = "bec.exchange-powershell/v2"
+
+
+def exchange_json(raw):
+    """Reject ambiguous fields in a versioned receipt or message trace page."""
+    def unique_fields(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise CaseError("Duplicate field in Exchange JSON.")
+            result[key] = value
+        return result
+    try:
+        return json.loads(raw.decode("utf-8-sig"), object_pairs_hook=unique_fields)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise CaseError("Invalid UTF-8 JSON in the Exchange capture.") from exc
 
 
 def local_path(value):
@@ -52,11 +67,19 @@ class ExportBundle:
         if not isinstance(manifest.get("tenant"), str) or not manifest["tenant"].strip():
             raise CaseError("Bundle manifest must identify its tenant.")
         schema = manifest.get("schema")
-        if isinstance(schema, str) and schema.startswith("bec.exchange-powershell/") and schema != EXCHANGE_SCHEMA:
-            raise CaseError("Unsupported Exchange PowerShell receipt version.")
         exchange = schema == EXCHANGE_SCHEMA
+        capture_fields = "reads" in manifest or {"scope", "captured_at"} <= manifest.keys()
+        exchange_version = isinstance(schema, str) and schema.startswith("bec.exchange-powershell/")
+        if not exchange and (capture_fields or exchange_version):
+            raise CaseError("Exchange capture import requires a trace-only v2 receipt.")
+        if exchange:
+            manifest = exchange_json(raw)
+        if exchange and set(manifest) != {"schema", "tenant", "directory_id", "files", "scope", "reads", "captured_at"}:
+            raise CaseError("Unexpected fields in the Exchange trace receipt.")
         if exchange and not offline:
             raise CaseError("Use bec offline for a versioned Exchange PowerShell bundle.")
+        if exchange and (path.parent / "audit.json").exists():
+            raise CaseError("Exchange trace capture directory contains a legacy audit file.")
         entries = manifest.get("files")
         if not isinstance(entries, list) or (not entries and not exchange):
             raise CaseError("Bundle manifest must list one or more files.")
@@ -64,6 +87,9 @@ class ExportBundle:
         for entry in entries:
             if not isinstance(entry, dict) or entry.get("dataset") not in DATASETS:
                 raise CaseError("Each bundle entry must name a supported dataset.")
+            if exchange and (set(entry) != {"dataset", "path", "sha256"} or entry["dataset"] != "trace"
+                             or entry["path"] not in ("sent.json", "received.json")):
+                raise CaseError("Exchange receipts may list only the two scoped trace files.")
             name = entry.get("path")
             if not isinstance(name, str) or not name.strip() or "\x00" in name:
                 raise CaseError("Each bundle entry must name an export file.")
