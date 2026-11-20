@@ -79,3 +79,40 @@ Assert-Rejection @([pscustomobject]$row) 'unique command module'
 Assert-Rejection @([pscustomobject]$base) 'unique command module' -OmitTenant
 Assert-Rejection @([pscustomobject]$base) 'explicit tenant ID must be a nonempty GUID' -ExpectedTenant ([guid]::Empty)
 "PowerShell scripts parsed and $checks pre-read metadata guards passed. No workload command or Python process ran."
+
+# Run only local helper definitions against an unavailable or denied command.
+# These checks exercise the host PowerShell without opening an Exchange session.
+$ast = [Management.Automation.Language.Parser]::ParseFile($adapter, [ref]$tokens, [ref]$errors)
+$helpers = $ast.FindAll({ param($n)
+    $n -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        ($n.Name -like '*BecSnapshot*' -or $n.Name -eq 'Get-BecReadFailure')
+}, $false)
+foreach ($helper in $helpers) { . ([scriptblock]::Create($helper.Extent.Text)) }
+function Assert-BecConnection { $script:sessionChecks++ }
+$script:sessionChecks = 0
+$dateFormat = [Globalization.CultureInfo]::InvariantCulture
+$stamp = "yyyy-MM-dd'T'HH:mm:ss.ffffff'Z'"
+$target = [guid]::NewGuid()
+$address = "$([guid]::NewGuid())@example.invalid"
+$mailbox = [pscustomobject]@{ PrimarySmtpAddress = $address; ExternalDirectoryObjectId = [guid]::NewGuid()
+    Guid = $target; ExchangeGuid = [guid]::NewGuid(); ForwardingAddress = $null
+    ForwardingSmtpAddress = $null; DeliverToMailboxAndForward = $false; GrantSendOnBehalfTo = @() }
+$anchor = Get-BecSnapshotAnchor $mailbox $address
+$commands = @{}
+$at = [DateTime]::UtcNow.ToString($stamp, $dateFormat)
+$unavailable = Get-BecSnapshotObservations $mailbox $anchor $at
+if ($unavailable.inbox_rules.status -ne 'unavailable' -or $unavailable.inbox_rules.records.Count -ne 0) {
+    throw 'A missing inbox-rule command must produce an empty coverage gap.'
+}
+function Read-DeniedRule {
+    [CmdletBinding()]param([string]$Mailbox,[int]$ResultSize,[switch]$IncludeHidden)
+    if ($Mailbox -cne $target.ToString() -or $ResultSize -ne 1000 -or -not $IncludeHidden) {
+        throw 'Snapshot query lost its native target or bounded options.'
+    }
+    throw [UnauthorizedAccessException]::new('Unavailable to the current operator.')
+}
+$commands['Get-InboxRule'] = Get-Command Read-DeniedRule
+$denied = Get-BecSnapshotObservations $mailbox $anchor $at
+if ($denied.inbox_rules.status -ne 'denied' -or $denied.inbox_rules.records.Count -ne 0 -or
+    $script:sessionChecks -lt 2) { throw 'A denied read must preserve its gap and session guards.' }
+'Native unavailable and denied current-state checks passed with local mocks.'

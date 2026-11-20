@@ -52,6 +52,22 @@ class TraceContainment(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             return main(args)
 
+    def test_unavailable_sources_make_a_verified_gap_only_package(self):
+        self.assertEqual(self.cli(self.receipt()), 2)
+        case_dir = next(self.root.rglob("case.json")).resolve().parent
+        output_root = (self.work / "review").resolve()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(main(["package", str(case_dir), "--output", str(output_root)]), 2)
+        package_manifest, = output_root.rglob("manifest.json")
+        package = package_manifest.parent
+        metadata = json.loads(package_manifest.read_bytes())
+        original_receipt, = metadata["trace_receipts"]
+        self.assertTrue(metadata["has_coverage_gaps"])
+        self.assertEqual(metadata["counts"]["observations"], 0)
+        self.assertEqual((package / original_receipt["file"]).read_bytes(), self.path.read_bytes())
+        for member in ("triage.xlsx", "investigation.pdf", "coverage.json", "SHA256SUMS.txt"):
+            self.assertTrue((package / member).is_file())
+
     def test_directional_pages_preserve_exact_bytes_hash_and_report_gap(self):
         manifest = self.receipt()
         raw_by_name = {}

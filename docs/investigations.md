@@ -28,7 +28,7 @@ To pin an independently known tenant GUID, append the optional `-TenantId $Custo
 .\Invoke-BEC.ps1 -Accounts $AffectedAccount -StartUtc $StartUtc -EndUtc $EndUtc
 ```
 
-One case is written per mailbox. `-CaseRoot` selects a protected local directory. Cases default to `~/BEC-Cases/TENANT/CASE_ID` and exports to `~/BEC-Cases/exchange-exports/TENANT`, using the verified tenant GUID. The console prints the export and report paths. `bec microsoft --help` explains the launcher. Python cannot inherit the PowerShell connection. With a wheel installed in an activated virtual environment, use its adapter in the same window.
+One case is written per mailbox. `-CaseRoot` selects a protected local directory. Cases default to `~/BEC-Cases/TENANT/CASE_ID`, Exchange exports to `~/BEC-Cases/exchange-exports/TENANT`, and analyst packages to `~/BEC-Cases/review-packages`. The console prints the PDF and workbook paths. Use `bec microsoft --help` for launcher help. With a wheel installed in an activated virtual environment, use its adapter in the connected PowerShell window.
 
 ```powershell
 & (bec microsoft --adapter) -Python (Get-Command python -CommandType Application).Source
@@ -36,7 +36,7 @@ One case is written per mailbox. `-CaseRoot` selects a protected local directory
 
 The adapter divides the queryable interval into ranges of at most ten days and requests up to 1,000 rows per direction per range. It verifies every row before saving a page. The interval includes the start and excludes the end. A page containing the excluded endpoint is discarded and reported as a boundary gap. Other invalid account, tenant or time scope stops collection. Reports distinguish capped, denied, throttled, empty and unavailable coverage. A full page may omit records, so use a shorter explicit interval for high volume.
 
-The run allows at most 100 trace calls in any rolling five minutes, with no automatic retry. An explicit service throttle stops further trace reads and leaves unattempted ranges visible. Retry later only when authorized. Mailbox audit is not collected. Missing Entra and Defender data and omitted inbox-rule state remain gaps. An unverifiable session or mailbox stops incident reads. Live tenant operation and Windows script-policy acceptance remain unverified. [Workload limits](security.md#microsoft-sources-and-limits)
+The run allows at most 100 trace calls in any rolling five minutes. An explicit throttle stops further trace reads and leaves unattempted ranges visible. The same confirmation also covers observations of current inbox rules, forwarding, Full Access, Send As and Send on Behalf. Their timestamps record when BEC read the settings. Historical mailbox audit, Entra and Defender events require separate exports. Live tenant operation and Windows script-policy acceptance remain unverified. [Workload limits](security.md#microsoft-sources-and-limits) · [Package contents and import formats](evidence-package.md)
 
 ## Investigate Google Workspace
 
@@ -115,7 +115,8 @@ Results preserve raw artifact hashes, record indexes, and Google child-event ind
 
 | Command | Result |
 | --- | --- |
-| `Invoke-BEC.ps1 [-TenantId GUID]` / `bec microsoft --help` | Confirm the verified session, accounts and UTC window, then read scoped message traces and print one local report per account |
+| `Invoke-BEC.ps1 [-TenantId GUID]` / `bec microsoft --help` | Confirm the session, accounts, trace window and current mailbox reads, then produce one local package per account |
+| `bec package CASE_DIR --output ROOT` | Build a new per-user analyst package from verified scoped sources. Optional source receipts add mapped offline events. |
 | `bec offline --bundle FILE --case ID` | Verify and import a local export. Use `--tenant`, the account and incident bounds to start a case. |
 | `bec compare BEFORE_DIR AFTER_DIR [--format json\|html] [--output FILE]` | Verify and compare saved raw evidence without changing either source case |
 | `bec search CASE_DIR TYPE VALUE [--format json\|html] [--output FILE]` | Read-only exact typed indicator lookup in verified saved evidence |

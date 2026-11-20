@@ -54,7 +54,7 @@ Live tenant operation remains unverified. Installation and command discovery do 
 
 | Component | Purpose |
 | --- | --- |
-| Base `pip install .` | The `bec` Python CLI, local case and report engine, rules, and PowerShell adapter. Windows also installs `tzdata` for time zones. |
+| Base `pip install .` | The `bec` Python CLI, local case and report engine, rules and PowerShell adapter. The local workbook and PDF writers need no Office installation or additional Python libraries. Windows also installs `tzdata` for time zones. |
 | Existing ExchangeOnlineManagement module | Microsoft's sign-in and incident cmdlets in the operator's PowerShell window. Managed separately from pip. |
 | Optional `pip install ".[live]"` | Requests and Google Auth for a separately authorized Google Workspace collector. The Microsoft route uses the base package. |
 

@@ -2,7 +2,7 @@
 
 ![BEC email investigation](docs/assets/BEC-Banner.gif)
 
-BEC is a command-line tool for investigating business email compromise. For Microsoft 365, an analyst uses their own authorized Exchange Online PowerShell session to read sent and received message traces for named accounts. The live adapter does not collect mailbox audit events or current inbox rules. Python builds a local timeline and links findings to the saved evidence. BEC can also analyze existing Microsoft, Defender email and Google Workspace exports.
+BEC is a command-line tool for investigating business email compromise. In your authorized Exchange Online PowerShell session, it reads message traces for named accounts and checks their current inbox rules, forwarding and delegation. Each user gets a local investigation PDF, triage workbook and indexed evidence. Missing access or an unverifiable mailbox result appears as a coverage gap. Purview mailbox history, Entra identity events and Defender clicks use separately authorized offline exports. BEC also supports Google Workspace investigations.
 
 ## First investigation on Windows
 
@@ -28,6 +28,6 @@ BEC is a command-line tool for investigating business email compromise. For Micr
 
    Check the displayed operator and tenant GUID, then enter the affected primary email addresses and choose a time window. Type **yes** to collect or **q** to cancel. [Window choices and retention](docs/investigations.md#investigate-microsoft-365-in-powershell)
 
-BEC prints a local report path per account. Cases default to `BEC-Cases` in your user folder.
+BEC prints the PDF and workbook paths for each account. The default case store is `BEC-Cases` in your user folder. [Read the evidence package or add offline sources](docs/evidence-package.md)
 
 [Windows](docs/prerequisites.md#windows) · [macOS](docs/prerequisites.md#macos) · [Ubuntu](docs/prerequisites.md#ubuntu) · [Operator guide and custom windows](docs/investigations.md) · [Offline export fallback](docs/investigations.md#work-with-an-existing-export) · [MIT License](LICENSE)

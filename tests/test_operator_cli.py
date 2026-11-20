@@ -48,12 +48,13 @@ class OperatorBoundary(unittest.TestCase):
         self.assertTrue(ADAPTER.is_file())
 
     def test_help_distinguishes_live_and_offline(self):
-        for args in (["--help"], ["offline", "--help"], ["microsoft", "--help"]):
+        for args in (["--help"], ["offline", "--help"], ["microsoft", "--help"], ["package", "--help"]):
             with self.subTest(args=args), self.assertRaises(SystemExit) as result:
                 self.command(*args)
             self.assertEqual(result.exception.code, 0)
         self.assertIn("--bundle", self.output.getvalue())
         self.assertIn("Invoke-BEC.ps1", self.output.getvalue())
+        self.assertIn("--source", self.output.getvalue())
 
     def test_offline_requires_explicit_manifest_and_scope(self):
         for args in (["--case", "missing"], ["--bundle", str(self.manifest)]):
@@ -130,7 +131,10 @@ class OperatorBoundary(unittest.TestCase):
         self.assertIn("Join-Path $PSScriptRoot 'bec/data/Invoke-BEC.ps1'", launcher)
         self.assertIn("& $adapter -Python $python @PSBoundParameters", launcher)
         self.assertNotIn("Search-UnifiedAuditLog", launcher)
-        self.assertIn("$planText = & $Python -I -m bec.exchange plan-session @scopeArgs", source)
+        self.assertIn("$planText = & $Python -I -m bec.exchange plan-session --mailbox-state @scopeArgs", source)
+        self.assertEqual(set(re.findall(r"'(Get-[A-Za-z0-9]+)' = \(Get-BecCommandPin \$sourceModule", source)),
+                         {"Get-Mailbox", "Get-MessageTraceV2", "Get-InboxRule", "Get-MailboxPermission",
+                          "Get-RecipientPermission"})
         self.assertIn("foreach ($direction in 'sent', 'received')", source)
         self.assertIn("if ($direction -eq 'sent') { $parameters['SenderAddress'] = $account }", source)
         self.assertIn("else { $parameters['RecipientAddress'] = $account }", source)
@@ -138,11 +142,13 @@ class OperatorBoundary(unittest.TestCase):
         self.assertEqual(re.findall(r"\[IO.File\]::WriteAllText\(([^,]+),", source), ["$bundle"])
         self.assertIn("Get-BecCommandPin $metadataModule 'Get-ConnectionInformation'", source)
         self.assertIn("@(& $metadataRead -ErrorAction Stop)", source)
-        for term in ("Search-UnifiedAuditLog", "Connect-ExchangeOnline", "Invoke-Expression", "Start-Process", "Get-InboxRule",
+        for term in ("Search-UnifiedAuditLog", "Connect-ExchangeOnline", "Invoke-Expression", "Start-Process",
                      "New-ComplianceSearch", "Invoke-RestMethod", "Invoke-WebRequest", "AccessToken"):
             self.assertNotIn(term, source)
         self.assertLess(source.index("$session = Get-BecSession"), source.index("& $mailboxRead"))
-        self.assertLess(source.index("& $mailboxRead"), source.index("& $read @parameters"))
+        capture = source[source.index("foreach ($account in $plan.accounts)"):]
+        self.assertLess(capture.index("& $mailboxRead"), capture.index("Get-BecSnapshotObservations"))
+        self.assertLess(capture.index("& $mailboxRead"), capture.index("& $read @parameters"))
 
 
 class RetiredMicrosoftRoutes(unittest.TestCase):
