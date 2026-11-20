@@ -12,7 +12,7 @@ from zipfile import ZipFile
 from bec.cli import main
 from bec.package_documents import write_workbook
 from bec.package_inputs import _anchor
-from bec.package_safety import safe_name
+from bec.package_safety import read_bytes, safe_name
 from bec.storage import CaseError
 
 
@@ -46,6 +46,14 @@ class PackageControls(unittest.TestCase):
             _anchor(known, str(uuid.uuid4()))
         with self.assertRaises(CaseError):
             _anchor(None, str(uuid.UUID(int=0)))
+
+    def test_package_reader_preserves_an_ordinary_binary_file(self):
+        path = self.root / "bytes.dat"
+        data = bytes(range(256))
+        path.write_bytes(data)
+        self.assertEqual(read_bytes(path, len(data)), data)
+        with self.assertRaises(CaseError):
+            read_bytes(path, len(data) - 1)
 
     def test_reserved_components_are_refused(self):
         for part in ("", "..", "CON", "lpt1.csv", "trailing.", "one/two", "one:two"):

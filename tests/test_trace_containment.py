@@ -56,8 +56,9 @@ class TraceContainment(unittest.TestCase):
         self.assertEqual(self.cli(self.receipt()), 2)
         case_dir = next(self.root.rglob("case.json")).resolve().parent
         output_root = (self.work / "review").resolve()
-        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            self.assertEqual(main(["package", str(case_dir), "--output", str(output_root)]), 2)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as errors:
+            status = main(["package", str(case_dir), "--output", str(output_root)])
+        self.assertEqual(status, 2, errors.getvalue())
         package_manifest, = output_root.rglob("manifest.json")
         package = package_manifest.parent
         metadata = json.loads(package_manifest.read_bytes())
