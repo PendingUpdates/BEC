@@ -20,12 +20,14 @@ BEC is a command-line tool for investigating business email compromise. For Micr
    Connect-ExchangeOnline
    ```
 
-4. Use the **customer tenant ID from the incident record**. Replace the quoted placeholder with its GUID. Run the launcher in the connected window.
+4. Run the launcher in the connected window.
 
    ```powershell
-   .\Invoke-BEC.ps1 -TenantId 'CUSTOMER-TENANT-GUID'
+   .\Invoke-BEC.ps1
    ```
 
-   Check the displayed operator, tenant and UTC window. At **Accounts to investigate**, enter the affected primary email addresses separated by commas. The default window is the preceding 24 hours. BEC prints a local report path per account and lists coverage gaps. Cases default to `BEC-Cases` in your user folder.
+   Check the displayed operator and tenant GUID, then enter the affected primary email addresses and choose a time window. Type **yes** to collect or **q** to cancel. [Window choices and retention](docs/investigations.md#investigate-microsoft-365-in-powershell)
+
+BEC prints a local report path per account. Cases default to `BEC-Cases` in your user folder.
 
 [Windows](docs/prerequisites.md#windows) · [macOS](docs/prerequisites.md#macos) · [Ubuntu](docs/prerequisites.md#ubuntu) · [Operator guide and custom windows](docs/investigations.md) · [Offline export fallback](docs/investigations.md#work-with-an-existing-export) · [MIT License](LICENSE)

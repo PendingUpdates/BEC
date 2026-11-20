@@ -1,7 +1,7 @@
 """Acquisition checkpoints and immutable raw-byte replay."""
 import json
 
-from .bundles import EXCHANGE_SCHEMA, ExportBundle
+from .bundles import EXCHANGE_SCHEMAS, ExportBundle
 from .evidence import evidence_references
 from .hunting import TABLES
 from .normalize import event_time, normalize, object_value, records, ual_body
@@ -120,7 +120,7 @@ class Collection:
     def import_files(self, bundle, *, verified_hashes=None, receipt=None):
         bundle.check_binding(self.case.tenant, self.case.meta["directory_id"],
                              (self.case.meta.get("google_workspace") or {}).get("customer_id"))
-        if (bundle.manifest.get("schema") == EXCHANGE_SCHEMA) != (receipt is not None):
+        if (bundle.manifest.get("schema") in EXCHANGE_SCHEMAS) != (receipt is not None):
             raise CaseError("An Exchange capture requires its validated receipt.")
         manifest = self.case.manifest()
         saved_receipts = manifest.get("exchange_receipts", [])
@@ -129,7 +129,7 @@ class Collection:
             raise CaseError("Use separate cases for Exchange captures and ordinary offline exports.")
         if receipt and (any(item["dataset"] != "trace" or item["collector"] != "exchange_online_powershell"
                             for item in manifest["artifacts"]) or
-                        any(read(self.case.receipt_path(sha)).get("schema") != EXCHANGE_SCHEMA for sha in saved_receipts)):
+                        any(read(self.case.receipt_path(sha)).get("schema") not in EXCHANGE_SCHEMAS for sha in saved_receipts)):
             raise CaseError("Use a new trace-only case for this capture. Earlier evidence stays in its original case.")
         if receipt and verified_hashes is None:
             verified_hashes = verify_export_files(bundle, self.case.tenant, self.case.meta["directory_id"],
@@ -141,7 +141,7 @@ class Collection:
         if receipt:
             receipt.preserve(self.case, bundle.raw_manifest)
         for dataset, name, local in bundle.files:
-            key = f"file:{dataset}:{name}"
+            key = f"file:{dataset}:{name}" if receipt is None else f"file:{receipt.sha}:{dataset}:{name}"
             query = dict(endpoint="local export", file=name, start=self.case.meta["start"],
                          end=self.case.meta["end"], dataset=dataset)
             if receipt:
@@ -178,6 +178,10 @@ class Collection:
                 self.state["queries"].pop(key, None)
         if receipt:
             self.state["queries"].update(receipt.coverage())
+            captures = self.state.setdefault("exchange_coverage", [])
+            captures[:] = [item for item in captures if item["receipt_sha256"] != receipt.sha]
+            captures.append(receipt.coverage_report())
+            captures.sort(key=lambda item: (item["captured_at"], item["receipt_sha256"]))
         self.update()
 
     def collect(self, queries):

@@ -6,6 +6,7 @@
 *{box-sizing:border-box}body{margin:0;background:var(--page);color:var(--ink);font:15px/1.5 "Segoe UI",Arial,sans-serif}header{background:#193d31;color:#fff;padding:26px max(5vw,20px) 30px;border-top:5px solid #f4bd57}h1{font:normal clamp(28px,4vw,46px)/1.1 Georgia,serif;margin:14px 0}header p{margin:0;color:#d4e5db}.brand{letter-spacing:.07em;font-weight:600;font-size:12px}main{max-width:1600px;margin:auto;padding:26px max(4vw,16px)}h2{font:normal 26px Georgia,serif;margin:26px 0 12px}label{display:flex;flex-direction:column;font-size:12px;font-weight:650;gap:3px}button,select,input{font:inherit;padding:6px 9px;border:1px solid #9aaea3;border-radius:4px;background:white;color:var(--ink)}button,summary,select{cursor:pointer}button:disabled{opacity:.45;cursor:default}button:focus-visible,input:focus-visible,summary:focus-visible,select:focus-visible{outline:3px solid #b57815}nav,.controls,.pager,.metrics{display:flex;gap:12px;flex-wrap:wrap;align-items:center}.metrics{gap:20px;color:var(--muted);padding-bottom:16px;border-bottom:1px solid var(--line)}.metrics b{color:var(--ink)}.controls{align-items:end;margin:12px 0}.controls input{min-width:175px}.controls select{max-width:220px}.wrap{overflow-x:auto;background:white;border:1px solid var(--line);border-radius:5px}table{border-collapse:collapse;width:100%;text-align:left;font-size:14px}th{background:#e6ede6;font-size:12px;font-weight:650;white-space:nowrap}td,th{padding:10px;border-bottom:1px solid var(--line);vertical-align:top}td{overflow-wrap:anywhere}th button{background:transparent;border:0;padding:0;font-weight:650}.time{min-width:175px;font-variant-numeric:tabular-nums}details{margin:10px 0;background:#fff;border:1px solid var(--line);border-radius:4px;padding:9px 12px}summary{font-weight:600}td details{margin:0;padding:0;border:0}a{color:var(--green)}.tag{display:inline-block;font-size:12px;padding:2px 7px;border-radius:3px;background:#e8eee8}.suspicious{background:#f9e5bf}.pager{justify-content:flex-end;margin:10px 0}ul{padding-left:22px}li{margin:4px 0}small{display:block;color:var(--muted)}#window{font-variant-numeric:tabular-nums}.empty{text-align:center;padding:30px}.count{margin-right:auto}
 </style></head><body><header><div class="brand">BACON EGG AND CHEESE / INCIDENT RESPONSE</div><h1>Investigation timeline</h1><p id="identity"></p><p id="window"></p></header><main>
 <div class="metrics" id="metrics"></div>
+<section id="trace-coverage" hidden aria-labelledby="trace-coverage-title"><h2 id="trace-coverage-title">Exchange trace coverage</h2><div id="trace-captures"></div></section>
 <details id="gaps"><summary id="gap-title"></summary><ul id="gap-list"></ul></details>
 <details><summary id="find-title"></summary><ul id="find-list"></ul></details>
 <section id="message-panel" hidden aria-labelledby="message-title"><h2 id="message-title">Message evidence</h2><div class="controls"><label>Message<select id="message-select" aria-label="Message"></select></label><button id="all-events">Show all events</button></div><div id="message-info"></div></section>
@@ -24,6 +25,27 @@ el("window").textContent=fmt(s.start)+"  →  "+fmt(s.end);
 if(s.collection_scope)el("window").append(" · "+s.collection_scope);
 for(const [value,title] of [[s.event_count,"events"],[s.investigation_rows,"investigation rows"],[s.findings,"findings"],[s.mailbox_message_matches,"mailbox/message matches"],[s.gaps,"telemetry gaps"]]){
  const d=node("span");d.append(node("b",value)," "+title);el("metrics").append(d)}
+for(const capture of s.exchange_coverage||[]){
+ el("trace-coverage").hidden=false;
+ const detail=node("details");detail.open=true;
+ detail.append(node("summary",capture.account+" · captured "+fmt(capture.captured_at)));
+ detail.append(node("p","Requested UTC: "+fmt(capture.requested.start)+" → "+fmt(capture.requested.end)+" (end excluded)"));
+ detail.append(node("p","Queryable UTC: "+fmt(capture.queryable.start)+" → "+fmt(capture.queryable.end)+" · "+capture.queryable_basis));
+ if(capture.aged_off_prefix)detail.append(node("p","Older than 90-day retention: "+fmt(capture.aged_off_prefix.start)+" → "+fmt(capture.aged_off_prefix.end)));
+ detail.append(node("p",capture.caveat),node("p",capture.audit_gap));
+ const wrap=node("div"),table=node("table"),head=node("thead"),headrow=node("tr"),body=node("tbody");wrap.className="wrap";
+ for(const title of ["Read / direction","Actual UTC range (end excluded)","Outcome / preserved rows","Checked UTC / row limit","Source file / SHA-256"]){headrow.append(node("th",title))}
+ head.append(headrow);table.append(head);
+ for(const read of capture.reads){
+  const row=node("tr"),range=node("td",fmt(read.start)+" → "+fmt(read.end)),outcome=node("td",read.outcome+" · "+(read.records==null?"unknown":read.records)+" preserved rows");
+  outcome.append(node("small",read.reason));
+  if(read.aged_off_prefix)range.append(node("small","Rolling retention cutoff excluded "+fmt(read.aged_off_prefix.start)+" → "+fmt(read.aged_off_prefix.end)));
+  const timing=node("td",read.checked_at?fmt(read.checked_at):"Unavailable (v2)");timing.append(node("small","Limit: "+read.result_limit+" rows"));
+  const source=node("td",read.file||"No page preserved");if(read.sha256)source.append(node("small",read.sha256));
+  row.append(node("td",read.id+" / "+read.direction),range,outcome,timing,source);body.append(row)
+ }
+ table.append(body);wrap.append(table);detail.append(wrap,node("small","Receipt SHA-256: "+capture.receipt_sha256));el("trace-captures").append(detail)
+}
 el("gap-title").textContent="Telemetry gaps ("+s.gaps+")";
 for(const g of data.gaps){el("gap-list").append(node("li",[g.dataset,g.value,g.reason,g.evidence?g.evidence.file+" ["+g.evidence.record_index+"]":""].filter(Boolean).join(" · ")))}
 el("find-title").textContent="Correlation findings ("+s.findings+")";

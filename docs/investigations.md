@@ -2,21 +2,41 @@
 
 ## Investigate Microsoft 365 in PowerShell
 
-From the extracted BEC folder, use the PowerShell window containing your single authorized Exchange Online user session. Supply a tenant GUID obtained independently for this incident. Python shows the signed-in account, customer tenant, UTC window and local output directory before prompting for the affected primary addresses. [Windows first use](../README.md#first-investigation-on-windows) · [Platform setup](prerequisites.md) · [Session requirements](security.md#investigator-sign-in)
+From the extracted BEC folder, use the PowerShell window with your single authorized, direct interactive Exchange Online session. Check the displayed operator and tenant GUID against the incident. BEC does not sign in automatically or infer a customer label from an account's domain. [Windows first use](../README.md#first-investigation-on-windows) · [Platform setup](prerequisites.md) · [Session requirements](security.md#investigator-sign-in)
 
 ```powershell
-.\Invoke-BEC.ps1 -TenantId $CustomerTenantId
+.\Invoke-BEC.ps1
 ```
 
-`$CustomerTenantId` is the customer's directory GUID from the incident record. The default window covers the previous 24 hours through the start of this run. To use a specific completed interval up to 24 hours, supply the actual UTC bounds and affected address.
+Enter the affected primary email addresses, then choose a window ending when BEC plans the request.
+
+| Choice | UTC interval |
+| --- | --- |
+| 24 hours (default) | Previous 24 hours |
+| One week | Previous seven days |
+| One calendar month | Same UTC time on the corresponding date in the previous month |
+| 90 days | Previous 90 days |
+| One calendar year | Same UTC time on the corresponding date in the previous year |
+
+Month and year choices clamp missing dates to the target month's last valid day and preserve the UTC time. A month back from March 31 uses February's last day, and a year back from February 29 uses February 28. Review the accounts, tenant GUID, requested and queryable UTC intervals, and output directory. Only explicit **yes** authorizes incident reads. Confirmation defaults to no, and **q** cancels.
+
+Exchange message trace has rolling 90-day retention. For a year request, BEC shows the unavailable range and requires explicit **yes** to collect only the retained slice. A range with no retained overlap is refused. A one-minute moving cutoff guard can also exclude the oldest part of a range. These omissions remain coverage gaps. An empty result does not establish that no activity occurred. Obtain older evidence through a separately authorized ordinary offline case.
+
+To pin an independently known tenant GUID, append the optional `-TenantId $CustomerTenantId`. A mismatch stops collection. For explicit bounds, supply both completed UTC timestamps ending in `Z` or `+00:00` and the affected address. The interval must be positive, no longer than one calendar year measured back from its end, and overlap current retention. The same review and confirmation apply.
 
 ```powershell
-.\Invoke-BEC.ps1 -TenantId $CustomerTenantId -Accounts $AffectedAccount -StartUtc $StartUtc -EndUtc $EndUtc
+.\Invoke-BEC.ps1 -Accounts $AffectedAccount -StartUtc $StartUtc -EndUtc $EndUtc
 ```
 
-One case is written per mailbox. `-CaseRoot` selects a protected local directory. By default cases go under `~/BEC-Cases/TENANT/CASE_ID` and versioned exports under `~/BEC-Cases/exchange-exports/TENANT`. The console prints the local export and report paths. `bec microsoft --help` explains the launcher. The Python executable cannot inherit the parent PowerShell connection. With a wheel installed in an activated virtual environment, use the packaged adapter in the same window: `& (bec microsoft --adapter) -Python (Get-Command python -CommandType Application).Source -TenantId $CustomerTenantId`.
+One case is written per mailbox. `-CaseRoot` selects a protected local directory. Cases default to `~/BEC-Cases/TENANT/CASE_ID` and exports to `~/BEC-Cases/exchange-exports/TENANT`, using the verified tenant GUID. The console prints the export and report paths. `bec microsoft --help` explains the launcher. Python cannot inherit the PowerShell connection. With a wheel installed in an activated virtual environment, use its adapter in the same window.
 
-The adapter reads sent and received message traces separately. It verifies every row before saving a page. The interval includes the start and excludes the end. Mailbox audit is not collected. Reports flag empty, failed and capped reads, missing Entra and Defender data and omitted inbox-rule state. For high volume, select a shorter explicit interval. An unverifiable session or mailbox stops incident reads. [Workload limits](security.md#microsoft-sources-and-limits)
+```powershell
+& (bec microsoft --adapter) -Python (Get-Command python -CommandType Application).Source
+```
+
+The adapter divides the queryable interval into ranges of at most ten days and requests up to 1,000 rows per direction per range. It verifies every row before saving a page. The interval includes the start and excludes the end. A page containing the excluded endpoint is discarded and reported as a boundary gap. Other invalid account, tenant or time scope stops collection. Reports distinguish capped, denied, throttled, empty and unavailable coverage. A full page may omit records, so use a shorter explicit interval for high volume.
+
+The run allows at most 100 trace calls in any rolling five minutes, with no automatic retry. An explicit service throttle stops further trace reads and leaves unattempted ranges visible. Retry later only when authorized. Mailbox audit is not collected. Missing Entra and Defender data and omitted inbox-rule state remain gaps. An unverifiable session or mailbox stops incident reads. Live tenant operation and Windows script-policy acceptance remain unverified. [Workload limits](security.md#microsoft-sources-and-limits)
 
 ## Investigate Google Workspace
 
@@ -58,7 +78,7 @@ For Defender exports, use the exact table name as the dataset key. Supported tab
 
 Use the exact alias and native identifiers from the investigation. For Workspace files also pass `--google-customer-id`. For a case without a Microsoft directory binding, omit `--directory-id`. Use `bec offline --case CASE_ID --bundle FILE` to add evidence to an existing export case. The importer checks the listed files and their bindings before creating a new case.
 
-A v2 PowerShell export contains trace files, per-direction coverage and hashes. New capture imports refuse v1 receipts, audit claims and capture directories containing the old audit.json export. Keep previously saved cases for local verification, search and replay. Use a separate ordinary offline case for independently authorized audit exports. The importer refuses to mix ordinary exports and operator-session captures in one case. For replay, supply the original tenant GUID as both `--tenant` and `--directory-id`, the primary account and the exact authorized UTC bounds. The evidence manifest records the preserved record bytes and the SHA-256 of the capture receipt.
+Existing trace-only `bec.exchange-powershell/v2` receipts still import with their per-direction coverage and hashes. New captures use `bec.exchange-powershell/v3`, preserving the requested interval, queryable ranges and each directional range's outcome with its trace file hash when a file was saved. Imports refuse v1 receipts, audit claims and capture directories containing the old `audit.json` export. Keep previously saved cases and reports for local verification, search and replay. Use a separate ordinary offline case for independently authorized audit exports or older evidence. The importer refuses to mix ordinary exports and operator-session captures in one case. For replay, supply the original tenant GUID as both `--tenant` and `--directory-id`, the primary account and the exact authorized UTC bounds. The evidence manifest records the preserved record bytes and the SHA-256 of the capture receipt.
 
 ## Compare saved cases offline
 
@@ -95,7 +115,7 @@ Results preserve raw artifact hashes, record indexes, and Google child-event ind
 
 | Command | Result |
 | --- | --- |
-| `Invoke-BEC.ps1 -TenantId GUID` / `bec microsoft --help` | Read named mailboxes in the verified PowerShell session and print one local report per account |
+| `Invoke-BEC.ps1 [-TenantId GUID]` / `bec microsoft --help` | Confirm the verified session, accounts and UTC window, then read scoped message traces and print one local report per account |
 | `bec offline --bundle FILE --case ID` | Verify and import a local export. Use `--tenant`, the account and incident bounds to start a case. |
 | `bec compare BEFORE_DIR AFTER_DIR [--format json\|html] [--output FILE]` | Verify and compare saved raw evidence without changing either source case |
 | `bec search CASE_DIR TYPE VALUE [--format json\|html] [--output FILE]` | Read-only exact typed indicator lookup in verified saved evidence |

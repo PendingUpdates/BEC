@@ -83,7 +83,8 @@ class OperatorBoundary(unittest.TestCase):
     def test_scope_plan_has_fixed_reads_and_no_case_write(self):
         args = argparse.Namespace(tenant=str(uuid.uuid4()), operator="analyst@example.invalid",
             connection=str(uuid.uuid4()), root=str(self.root), start=None, end=None, accounts=None)
-        with patch.object(sys, "stdin", io.StringIO("target@example.invalid\n")):
+        entry = io.StringIO("target@example.invalid\n\nyes\n")
+        with patch.object(entry, "isatty", return_value=True), patch.object(sys, "stdin", entry):
             scope = plan(args)
         self.assertEqual(scope["accounts"], ["target@example.invalid"])
         self.assertEqual(scope["tenant"], args.tenant)
@@ -129,13 +130,14 @@ class OperatorBoundary(unittest.TestCase):
         self.assertIn("Join-Path $PSScriptRoot 'bec/data/Invoke-BEC.ps1'", launcher)
         self.assertIn("& $adapter -Python $python @PSBoundParameters", launcher)
         self.assertNotIn("Search-UnifiedAuditLog", launcher)
-        self.assertIn("$planText = & $Python -I -m bec.exchange plan @scopeArgs", source)
-        self.assertIn("foreach ($key in 'sent', 'received')", source)
-        self.assertIn("if ($key -eq 'sent') { $parameters['SenderAddress'] = $account }", source)
+        self.assertIn("$planText = & $Python -I -m bec.exchange plan-session @scopeArgs", source)
+        self.assertIn("foreach ($direction in 'sent', 'received')", source)
+        self.assertIn("if ($direction -eq 'sent') { $parameters['SenderAddress'] = $account }", source)
         self.assertIn("else { $parameters['RecipientAddress'] = $account }", source)
         self.assertIn("$encoded | & $Python -I -m bec.exchange save-trace", source)
         self.assertEqual(re.findall(r"\[IO.File\]::WriteAllText\(([^,]+),", source), ["$bundle"])
-        self.assertIn("ExchangeOnlineManagement\\Get-ConnectionInformation", source)
+        self.assertIn("Get-BecCommandPin $metadataModule 'Get-ConnectionInformation'", source)
+        self.assertIn("@(& $metadataRead -ErrorAction Stop)", source)
         for term in ("Search-UnifiedAuditLog", "Connect-ExchangeOnline", "Invoke-Expression", "Start-Process", "Get-InboxRule",
                      "New-ComplianceSearch", "Invoke-RestMethod", "Invoke-WebRequest", "AccessToken"):
             self.assertNotIn(term, source)
