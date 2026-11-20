@@ -12,10 +12,11 @@ def main():
     if data.joinpath("demo").is_dir():
         raise RuntimeError("The installation contains a legacy sample directory.")
     with tempfile.TemporaryDirectory(prefix="bec-commands-") as folder:
-        for args in (["--version"], ["--help"], ["microsoft", "--help"], ["microsoft", "--adapter"], ["offline", "--help"], ["investigate", "--help"]):
+        for args in (["--version"], ["--help"], ["microsoft", "--help"], ["microsoft", "--adapter"],
+                     ["offline", "--help"], ["package", "--help"], ["investigate", "--help"]):
             result = subprocess.run([sys.executable, "-I", "-m", "bec", *args], cwd=folder,
                                     capture_output=True, text=True, check=True, timeout=30)
-            if args == ["--help"] and (not all(name in result.stdout for name in ("microsoft", "offline")) or "demo" in result.stdout):
+            if args == ["--help"] and (not all(name in result.stdout for name in ("microsoft", "offline", "package")) or "demo" in result.stdout):
                 raise RuntimeError("The installed command list does not match the release.")
     print("Installed command help, version and reporting resources are available.")
 

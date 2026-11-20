@@ -26,7 +26,7 @@ def parser():
     cmd = p.add_subparsers(dest="command", required=True)
     microsoft = cmd.add_parser("microsoft", help="start a read-only investigation in your connected PowerShell window",
         description="In your connected PowerShell window, run ./Invoke-BEC.ps1 from the BEC folder. "
-                    "Review the tenant ID and operator, choose accounts and a UTC window, then confirm the trace reads. "
+                    "Review the tenant and operator, then confirm the accounts, trace window and current mailbox state reads. "
                     "For a wheel install, use --adapter to locate the packaged launcher.")
     microsoft.add_argument("--adapter", action="store_true", help="print the installed PowerShell adapter path")
     offline = cmd.add_parser("offline", help="import an authorized local bundle and write the case report",
@@ -41,11 +41,29 @@ def parser():
     offline.add_argument("--end", help="incident end with UTC offset for a new case")
     offline.add_argument("--directory-id", help="expected Microsoft directory GUID, when the manifest declares one")
     offline.add_argument("--google-customer-id", help="expected customer ID for Workspace exports")
+    offline.add_argument("--review-package", action="store_true",
+                         help="also write a local analyst package for this verified Exchange trace receipt")
+    offline.add_argument("--exchange-snapshot", type=Path, metavar="FILE",
+                         help="include the current mailbox observations paired with this trace receipt")
+    offline.add_argument("--snapshot-sha256", help="original hash recorded by the Exchange snapshot capture")
+    package = cmd.add_parser("package", help="write the local per-user analyst package from verified, scoped evidence")
+    package.add_argument("directory", type=Path, help="saved case directory containing case.json")
+    package.add_argument("--output", type=Path, metavar="ROOT", required=True,
+                         help="local package root outside the source case")
+    package.add_argument("--source", dest="sources", type=Path, action="append", default=[], metavar="RECEIPT",
+                         help="include a separately authorized source acquisition receipt (repeatable)")
+    package.add_argument("--exchange-snapshot", type=Path, metavar="FILE",
+                         help="include current mailbox observations paired to a trace receipt in this case")
+    package.add_argument("--snapshot-sha256", help="original hash recorded by the Exchange snapshot capture")
+    package.add_argument("--user-object-id", help="independently verified Entra object GUID of the affected account")
+    package.add_argument("--mailbox-guid", help="independently verified Exchange mailbox GUID")
     case = cmd.add_parser("case", help="create a tenant-scoped case").add_subparsers(dest="action", required=True)
     new = case.add_parser("create")
     for flag in ("tenant", "user", "start", "end"):
         new.add_argument("--" + flag, required=True)
-    new.add_argument("--config", type=Path, help="tenant profile JSON")
+    binding = new.add_mutually_exclusive_group()
+    binding.add_argument("--config", type=Path, help="tenant profile JSON")
+    binding.add_argument("--directory-id", help="bind a new offline Microsoft case to an independently verified directory GUID")
     comparison = cmd.add_parser("compare", help="compare two saved case directories without changing them")
     comparison.add_argument("before", type=Path, help="earlier case directory containing case.json")
     comparison.add_argument("after", type=Path, help="later case directory containing case.json")
@@ -223,7 +241,21 @@ def run_case(args, case):
         return 2 if overview["gaps"] else 0
 
 
+def write_package(directory, output, inputs=None):
+    from .case_package import package_case
+
+    destination = package_case(directory, output, components=inputs)
+    print(f"Investigation package: {destination}")
+    print(f"Analyst workbook: {destination / 'triage.xlsx'}")
+    print(f"Investigation PDF: {destination / 'investigation.pdf'}")
+    return 2 if read(destination / "manifest.json")["has_coverage_gaps"] else 0
+
+
 def run_offline(args):
+    if bool(args.exchange_snapshot) != bool(args.snapshot_sha256):
+        raise CaseError("Supply the Exchange snapshot and its original acquisition SHA-256 together.")
+    if args.exchange_snapshot and not args.review_package:
+        raise CaseError("--exchange-snapshot requires --review-package for this trace import.")
     bundle = ExportBundle.load(args.bundle, offline=True)
     root = local_path(args.root or Path.home() / "BEC-Cases")
     if args.case_id:
@@ -259,6 +291,18 @@ def run_offline(args):
         if receipt:
             profile["options"] = dict(baseline_days=0, max_depth=0, max_users=1)
         hashes = verify_export_files(bundle, args.tenant, directory, customer, profile["microsoft"], receipt)
+    package_inputs = None
+    if args.review_package:
+        if not receipt:
+            raise CaseError("--review-package on an import requires a verified scoped Exchange trace receipt.")
+        if args.exchange_snapshot:
+            from .package_inputs import PackageInputs, paired_snapshot
+
+            current = paired_snapshot(args.exchange_snapshot, (receipt,), bundle.manifest["directory_id"],
+                                      receipt.scope["account"], receipt.scope["start"], receipt.scope["end"],
+                                      expected_hash=args.snapshot_sha256)
+            package_inputs = PackageInputs(exchange_snapshot=args.exchange_snapshot, snapshot_sha256=current.sha256)
+    if not args.case_id:
         case = create(root, args.tenant, accounts[0], args.start, args.end, profile, export_only=True, named_account=bool(receipt))
         print(f"Case {case.id}", flush=True)
     with case.lock():
@@ -269,7 +313,8 @@ def run_offline(args):
         Collection(case).import_files(bundle, verified_hashes=hashes, receipt=receipt)
         overview = report(case, manual_pivots(case))
         summarize(case, overview)
-    return 2 if overview["gaps"] else 0
+    status = write_package(case.path, case.path.parent.parent / "review-packages", package_inputs) if args.review_package else 0
+    return 2 if overview["gaps"] else status
 
 
 def main(argv=None):
@@ -277,6 +322,15 @@ def main(argv=None):
     try:
         if args.command == "offline":
             return run_offline(args)
+        if args.command == "package":
+            from .package_inputs import PackageInputs
+
+            inputs = None
+            if args.sources or args.exchange_snapshot or args.snapshot_sha256 or args.user_object_id or args.mailbox_guid:
+                inputs = PackageInputs(imports=tuple(args.sources), exchange_snapshot=args.exchange_snapshot,
+                                       snapshot_sha256=args.snapshot_sha256, user_object_id=args.user_object_id,
+                                       mailbox_guid=args.mailbox_guid)
+            return write_package(args.directory, args.output, inputs)
         if args.command == "microsoft":
             if args.adapter:
                 print(ADAPTER)
@@ -310,8 +364,15 @@ def main(argv=None):
                 print(render_html(result) if args.format == "html" else json.dumps(result, ensure_ascii=False, indent=2))
             return 0
         if args.command == "case":
-            cfg = read(args.config) if args.config else None
-            case = create(root, args.tenant, args.user, args.start, args.end, cfg)
+            if args.directory_id:
+                directory = uuid.UUID(args.directory_id)
+                if not directory.int:
+                    raise CaseError("Use a nonempty Microsoft directory GUID.")
+                cfg = dict(tenant=args.tenant, directory_id=str(directory), microsoft=True)
+                case = create(root, args.tenant, args.user, args.start, args.end, cfg, export_only=True, named_account=True)
+            else:
+                cfg = read(args.config) if args.config else None
+                case = create(root, args.tenant, args.user, args.start, args.end, cfg)
             print(case.id)
             return 0
         if args.command == "timeline" and args.case_id == "export-timesketch" and args.export_case:

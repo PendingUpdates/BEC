@@ -152,7 +152,7 @@ function Assert-BecConnection {
     if ($loaded.Count -ne 1 -or -not [object]::ReferenceEquals($loaded[0], $sourceModule)) {
         throw 'The session command module changed. Stopping collection.'
     }
-    foreach ($name in 'Get-Mailbox', 'Get-MessageTraceV2') {
+    foreach ($name in 'Get-Mailbox', 'Get-MessageTraceV2', 'Get-InboxRule', 'Get-MailboxPermission', 'Get-RecipientPermission') {
         Assert-BecCommandPin $sourceModule $name $commandPins[$name]
     }
 }
@@ -167,9 +167,12 @@ $sourceModule = $sourceModules[0]
 $commandPins = @{
     'Get-Mailbox' = (Get-BecCommandPin $sourceModule 'Get-Mailbox' $true)
     'Get-MessageTraceV2' = (Get-BecCommandPin $sourceModule 'Get-MessageTraceV2' $false)
+    'Get-InboxRule' = (Get-BecCommandPin $sourceModule 'Get-InboxRule' $false)
+    'Get-MailboxPermission' = (Get-BecCommandPin $sourceModule 'Get-MailboxPermission' $false)
+    'Get-RecipientPermission' = (Get-BecCommandPin $sourceModule 'Get-RecipientPermission' $false)
 }
 $commands = @{}
-foreach ($name in 'Get-Mailbox', 'Get-MessageTraceV2') {
+foreach ($name in 'Get-Mailbox', 'Get-MessageTraceV2', 'Get-InboxRule', 'Get-MailboxPermission', 'Get-RecipientPermission') {
     $commands[$name] = if ($null -eq $commandPins[$name]) { $null } else { $commandPins[$name].Command }
 }
 $mailboxRead = $commands['Get-Mailbox']
@@ -180,10 +183,13 @@ if ($StartUtc) { $scopeArgs += @('--start', $StartUtc) }
 if ($EndUtc) { $scopeArgs += @('--end', $EndUtc) }
 if ($CaseRoot) { $scopeArgs += @('--root', $CaseRoot) }
 if ($Accounts) { $scopeArgs += '--accounts'; $scopeArgs += $Accounts }
-$planText = & $Python -I -m bec.exchange plan-session @scopeArgs
+$planText = & $Python -I -m bec.exchange plan-session --mailbox-state @scopeArgs
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Assert-BecConnection
 $plan = $planText | ConvertFrom-Json
+if ($null -eq $plan.PSObject.Properties['snapshot_schema'] -or $plan.snapshot_schema -cne 'bec.exchange-snapshot/v1') {
+    throw 'The installed planner did not authorize current mailbox observations. Use the matching BEC package and adapter.'
+}
 # Read time fields as strings even on PowerShell versions that convert JSON dates to local DateTime.
 $wire = [System.Text.Json.JsonDocument]::Parse([string]$planText)
 try {
@@ -216,6 +222,238 @@ function Get-BecReadFailure($failure) {
     return 'denied-or-failed'
 }
 
+function Get-BecSnapshotProperty($Row, [string]$Name) {
+    $property = $Row.PSObject.Properties[$Name]
+    if ($null -eq $property) { throw 'field-unavailable' }
+    return $property.Value
+}
+
+function ConvertTo-BecSnapshotGuid($Value, [bool]$Optional = $false) {
+    if ($null -eq $Value -and $Optional) { return $null }
+    $id = [guid]::Empty
+    if (($Value -isnot [string] -and $Value -isnot [guid]) -or
+        -not [guid]::TryParse([string]$Value, [ref]$id)) { throw 'unbound-result' }
+    if ($id -eq [guid]::Empty) {
+        if ($Optional) { return $null }
+        throw 'unbound-result'
+    }
+    return $id.ToString()
+}
+
+function Assert-BecSnapshotTenant($Row) {
+    foreach ($name in 'TenantId', 'ExternalDirectoryOrganizationId') {
+        $property = $Row.PSObject.Properties[$name]
+        if ($null -ne $property) {
+            if ((ConvertTo-BecSnapshotGuid $property.Value) -cne $TenantId.ToString()) { throw 'unbound-result' }
+        }
+    }
+}
+
+function Get-BecSnapshotAnchor($Mailbox, [string]$Account) {
+    Assert-BecSnapshotTenant $Mailbox
+    if ([string](Get-BecSnapshotProperty $Mailbox 'PrimarySmtpAddress') -ine $Account) { throw 'unbound-result' }
+    $anchor = [ordered]@{ PrimarySmtpAddress = $Account
+        ExternalDirectoryObjectId = (ConvertTo-BecSnapshotGuid (Get-BecSnapshotProperty $Mailbox 'ExternalDirectoryObjectId'))
+        Guid = $null; ExchangeGuid = $null }
+    foreach ($name in 'Guid', 'ExchangeGuid') {
+        $property = $Mailbox.PSObject.Properties[$name]
+        if ($null -ne $property) { $anchor[$name] = ConvertTo-BecSnapshotGuid $property.Value $true }
+    }
+    return $anchor
+}
+
+function Get-BecSnapshotTarget($Row, [string]$Property, $Anchor) {
+    # Native ADObjectId.ObjectGuid names the target. Trustee/User and flattened names do not.
+    if ($null -eq $Anchor.Guid) { throw 'unbound-result' }
+    $identity = Get-BecSnapshotProperty $Row $Property
+    if ($null -eq $identity -or $identity -is [string] -or $identity -is [guid]) { throw 'unbound-result' }
+    $target = ConvertTo-BecSnapshotGuid (Get-BecSnapshotProperty $identity 'ObjectGuid')
+    if ($target -cne $Anchor.Guid) { throw 'unbound-result' }
+    return @{ ObjectGuid = $target }
+}
+
+function ConvertTo-BecSnapshotText($Value) {
+    if ($Value -is [string]) { return $Value }
+    if ($Value -is [Enum] -and [Enum]::IsDefined($Value.GetType(), $Value)) { return $Value.ToString() }
+    $known = @('Microsoft.Exchange.Data.SmtpAddress', 'Microsoft.Exchange.Data.SmtpProxyAddress',
+        'Microsoft.Exchange.Data.ProxyAddress', 'Microsoft.Exchange.Configuration.Tasks.RecipientIdParameter',
+        'Microsoft.Exchange.Configuration.Tasks.SecurityPrincipalIdParameter', 'System.Security.Principal.SecurityIdentifier')
+    if ($null -ne $Value -and $Value.GetType().FullName -in $known) { return $Value.ToString() }
+    throw 'field-unavailable'
+}
+
+function ConvertTo-BecSnapshotBoolean($Value) {
+    if ($Value -isnot [bool]) { throw 'field-unavailable' }
+    return $Value
+}
+
+function ConvertTo-BecSnapshotRecipient($Value) {
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [string]) { return $Value }
+    $guidProperty = $Value.PSObject.Properties['ObjectGuid']
+    if ($null -ne $guidProperty) {
+        return @{ ObjectGuid = (ConvertTo-BecSnapshotGuid $guidProperty.Value) }
+    }
+    # ADRecipientOrAddress exposes these fields. Preserve the routing type rather than assuming SMTP.
+    $address = $Value.PSObject.Properties['Address']
+    $routing = $Value.PSObject.Properties['RoutingType']
+    if ($null -ne $address -and $null -ne $routing -and $address.Value -is [string] -and $routing.Value -is [string]) {
+        return @{ Address = $address.Value; RoutingType = $routing.Value }
+    }
+    return ConvertTo-BecSnapshotText $Value
+}
+
+function ConvertTo-BecSnapshotRow($Row, [string]$Source, $Anchor) {
+    Assert-BecSnapshotTenant $Row
+    $record = [ordered]@{}
+    if ($Source -in 'forwarding', 'send_on_behalf') {
+        $returned = Get-BecSnapshotAnchor $Row $Anchor.PrimarySmtpAddress
+        foreach ($key in $Anchor.Keys) {
+            if ($returned[$key] -cne $Anchor[$key]) { throw 'unbound-result' }
+            $record[$key] = $returned[$key]
+        }
+    } else {
+        $field = if ($Source -eq 'inbox_rules') { 'MailboxOwnerId' } else { 'Identity' }
+        $record[$field] = Get-BecSnapshotTarget $Row $field $Anchor
+    }
+    switch ($Source) {
+        'inbox_rules' {
+            $ruleId = Get-BecSnapshotProperty $Row 'RuleIdentity'
+            if ($ruleId -isnot [string] -and $ruleId -isnot [uint64] -and $ruleId -isnot [long] -and $ruleId -isnot [int]) {
+                throw 'field-unavailable'
+            }
+            $record.RuleIdentity = [string]$ruleId
+            $record.Enabled = ConvertTo-BecSnapshotBoolean (Get-BecSnapshotProperty $Row 'Enabled')
+            $priority = Get-BecSnapshotProperty $Row 'Priority'
+            if ($priority -isnot [int] -and $priority -isnot [long] -and $priority -isnot [uint32]) { throw 'field-unavailable' }
+            $record.Priority = $priority
+            foreach ($name in 'Name', 'InError', 'SupportedByTask', 'DeleteMessage', 'MarkAsRead', 'StopProcessingRules') {
+                $property = $Row.PSObject.Properties[$name]
+                if ($null -ne $property) {
+                    $record[$name] = if ($name -eq 'Name') { ConvertTo-BecSnapshotText $property.Value }
+                        else { ConvertTo-BecSnapshotBoolean $property.Value }
+                }
+            }
+            foreach ($name in 'ForwardTo', 'RedirectTo', 'ForwardAsAttachmentTo', 'From') {
+                $property = $Row.PSObject.Properties[$name]
+                if ($null -ne $property) {
+                    $values = @($property.Value)
+                    if ($values.Count -gt 1000) { throw 'result-limit' }
+                    $record[$name] = @(foreach ($value in $values) {
+                        if ($null -ne $value) { ConvertTo-BecSnapshotRecipient $value }
+                    })
+                }
+            }
+        }
+        'forwarding' {
+            $record.ForwardingAddress = ConvertTo-BecSnapshotRecipient (Get-BecSnapshotProperty $Row 'ForwardingAddress')
+            $smtp = Get-BecSnapshotProperty $Row 'ForwardingSmtpAddress'
+            $record.ForwardingSmtpAddress = if ($null -eq $smtp) { $null } else { ConvertTo-BecSnapshotText $smtp }
+            $record.DeliverToMailboxAndForward = ConvertTo-BecSnapshotBoolean (Get-BecSnapshotProperty $Row 'DeliverToMailboxAndForward')
+        }
+        'send_on_behalf' {
+            $delegates = @(Get-BecSnapshotProperty $Row 'GrantSendOnBehalfTo')
+            if ($delegates.Count -gt 1000) { throw 'result-limit' }
+            $record.GrantSendOnBehalfTo = @(foreach ($delegate in $delegates) {
+                if ($null -ne $delegate) { ConvertTo-BecSnapshotRecipient $delegate }
+            })
+        }
+        'full_access' {
+            $record.User = ConvertTo-BecSnapshotText (Get-BecSnapshotProperty $Row 'User')
+            $record.AccessRights = @(foreach ($right in (Get-BecSnapshotProperty $Row 'AccessRights')) { ConvertTo-BecSnapshotText $right })
+            $record.Deny = ConvertTo-BecSnapshotBoolean (Get-BecSnapshotProperty $Row 'Deny')
+            $record.IsInherited = ConvertTo-BecSnapshotBoolean (Get-BecSnapshotProperty $Row 'IsInherited')
+        }
+        'send_as' {
+            $record.Trustee = ConvertTo-BecSnapshotText (Get-BecSnapshotProperty $Row 'Trustee')
+            $record.AccessRights = @(foreach ($right in (Get-BecSnapshotProperty $Row 'AccessRights')) { ConvertTo-BecSnapshotText $right })
+            $record.AccessControlType = ConvertTo-BecSnapshotText (Get-BecSnapshotProperty $Row 'AccessControlType')
+            $record.IsInherited = ConvertTo-BecSnapshotBoolean (Get-BecSnapshotProperty $Row 'IsInherited')
+        }
+    }
+    return $record
+}
+
+function Get-BecSnapshotObservations($Mailbox, $Anchor, [string]$MailboxObservedAt) {
+    $observations = [ordered]@{}
+    $sources = [ordered]@{ inbox_rules = 'Get-InboxRule'; forwarding = 'Get-Mailbox'
+        full_access = 'Get-MailboxPermission'; send_as = 'Get-RecipientPermission'; send_on_behalf = 'Get-Mailbox' }
+    $throttled = $false
+    foreach ($source in $sources.Keys) {
+        Assert-BecConnection
+        $name = $sources[$source]
+        $observation = [ordered]@{ command = $name; observed_at = [DateTime]::UtcNow.ToString($stamp, $dateFormat)
+            status = 'unavailable'; reason_codes = @('unavailable'); records = @(); hidden_included = $null }
+        if ($source -eq 'inbox_rules') { $observation.hidden_included = $false }
+        $observations[$source] = $observation
+        $rows = @()
+        if ($source -in 'forwarding', 'send_on_behalf') {
+            $rows = @($Mailbox)
+            $observation.observed_at = $MailboxObservedAt
+        } else {
+            if ($throttled) { $observation.reason_codes = @('throttled'); continue }
+            $read = $commands[$name]
+            if ($null -eq $read -or -not $read.Parameters.ContainsKey('ResultSize')) { continue }
+            $targetParameter = if ($source -eq 'inbox_rules') { 'Mailbox' } else { 'Identity' }
+            if (-not $read.Parameters.ContainsKey($targetParameter) -or $null -eq $Anchor.Guid) {
+                $observation.reason_codes = @('mailbox-identity-unavailable'); continue
+            }
+            $parameters = @{ ResultSize = 1000; ErrorAction = 'Stop'; WarningAction = 'Stop' }
+            $parameters[$targetParameter] = $Anchor.Guid
+            if ($source -eq 'inbox_rules' -and $read.Parameters.ContainsKey('IncludeHidden')) {
+                $parameters.IncludeHidden = $true
+                $observation.hidden_included = $true
+            }
+            try { $rows = @(& $read @parameters) }
+            catch [Management.Automation.PipelineStoppedException], [OperationCanceledException] { throw }
+            catch {
+                $failure = $_
+                Assert-BecConnection
+                $outcome = Get-BecReadFailure $failure
+                $observation.status = if ($outcome -eq 'access-denied') { 'denied' } else { 'partial' }
+                $observation.reason_codes = @(switch ($outcome) { 'access-denied' { 'denied' }; 'throttled' { 'throttled' }; default { 'failed' } })
+                if ($outcome -eq 'throttled') { $throttled = $true; $script:serviceThrottled = $true }
+                continue
+            }
+            Assert-BecConnection
+            $observation.observed_at = [DateTime]::UtcNow.ToString($stamp, $dateFormat)
+        }
+        $observation.status = 'collected'
+        $observation.reason_codes = @()
+        if ($source -eq 'inbox_rules') { $observation.reason_codes += 'projection-limited' }
+        if ($rows.Count -ge 1000) { $observation.reason_codes += 'result-limit' }
+        if ($source -eq 'inbox_rules' -and -not $observation.hidden_included) { $observation.reason_codes += 'hidden-unavailable' }
+        if ($rows.Count -gt 1000) { $observation.status = 'partial'; continue }
+        try {
+            # Validate every returned target, including ACL rows later excluded from this observation.
+            $projected = @(foreach ($row in $rows) { ConvertTo-BecSnapshotRow $row $source $Anchor })
+            $observation.records = @(foreach ($record in $projected) {
+                if ($source -eq 'full_access' -and 'FullAccess' -cnotin $record.AccessRights) { continue }
+                if ($source -eq 'send_as' -and 'SendAs' -cnotin $record.AccessRights) { continue }
+                $record
+            })
+            if ($source -eq 'inbox_rules') {
+                foreach ($record in $observation.records) {
+                    foreach ($field in 'Name', 'InError', 'SupportedByTask', 'DeleteMessage', 'MarkAsRead',
+                        'StopProcessingRules', 'ForwardTo', 'RedirectTo', 'ForwardAsAttachmentTo', 'From') {
+                        if (-not $record.Contains($field)) { $observation.reason_codes += 'field-unavailable' }
+                    }
+                }
+            }
+        } catch [Management.Automation.PipelineStoppedException], [OperationCanceledException] { throw }
+        catch {
+            $reason = $_.Exception.Message
+            if ($reason -notin 'unbound-result', 'field-unavailable', 'result-limit') { $reason = 'invalid-result' }
+            $observation.reason_codes += $reason
+            $observation.records = @()
+        }
+        if ($observation.records.Count -eq 0) { $observation.reason_codes += 'empty' }
+        $observation.reason_codes = @($observation.reason_codes | Select-Object -Unique)
+        if ($observation.reason_codes.Count) { $observation.status = 'partial' }
+    }
+    return $observations
+}
+
 $dateFormat = [Globalization.CultureInfo]::InvariantCulture
 $stamp = "yyyy-MM-dd'T'HH:mm:ss.ffffff'Z'"
 $calls = [Collections.Generic.Queue[datetime]]::new()
@@ -226,9 +464,21 @@ foreach ($account in $plan.accounts) {
     try { $mailbox = @(& $mailboxRead -Identity $account -ErrorAction Stop -WarningAction Stop) }
     catch { throw "Get-Mailbox could not verify $account in this session. No incident reads were made for this account." }
     Assert-BecConnection
+    $mailboxObservedAt = [DateTime]::UtcNow.ToString($stamp, $dateFormat)
     if ($mailbox.Count -ne 1 -or [string]$mailbox[0].PrimarySmtpAddress -ne $account -or
         -not $mailbox[0].ExternalDirectoryObjectId) {
         throw 'Could not verify one mailbox with that exact primary SMTP address. Stopping before incident reads.'
+    }
+    # A contradictory or unusable native tenant marker invalidates the account read itself.
+    # This check is outside the optional snapshot-identity fallback and precedes every other read/write.
+    Assert-BecSnapshotTenant $mailbox[0]
+    $snapshotAnchor = $null
+    $snapshotObservations = $null
+    try { $snapshotAnchor = Get-BecSnapshotAnchor $mailbox[0] $account }
+    catch [Management.Automation.PipelineStoppedException], [OperationCanceledException] { throw }
+    catch { Write-Warning 'Current mailbox observations are unavailable because native mailbox identity could not be verified.' }
+    if ($null -ne $snapshotAnchor) {
+        $snapshotObservations = Get-BecSnapshotObservations $mailbox[0] $snapshotAnchor $mailboxObservedAt
     }
     $parent = Join-Path $plan.root "exchange-exports/$TenantId"
     $directory = Join-Path $parent ([guid]::NewGuid().ToString())
@@ -303,8 +553,34 @@ foreach ($account in $plan.accounts) {
     $manifest['captured_at'] = [DateTime]::UtcNow.ToString($stamp, $dateFormat)
     $bundle = Join-Path $directory 'bundle.json'
     [IO.File]::WriteAllText($bundle, (ConvertTo-Json -InputObject $manifest -Depth 8), [Text.UTF8Encoding]::new($false))
+    $snapshotPath = $null
+    $snapshotHash = $null
+    if ($null -ne $snapshotObservations) {
+        Assert-BecConnection
+        $traceHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($bundle))).ToLowerInvariant()
+        $snapshot = [ordered]@{ schema = 'bec.exchange-snapshot/v1'; tenant = $plan.tenant; directory_id = $plan.tenant
+            scope = $manifest.scope; mailbox = $snapshotAnchor; captured_at = [DateTime]::UtcNow.ToString($stamp, $dateFormat)
+            trace_receipt_sha256 = $traceHash; evidence_class = 'allowlisted-source-properties'; observations = $snapshotObservations }
+        $snapshotJson = ConvertTo-Json -InputObject $snapshot -Depth 12 -Compress -WarningAction Stop
+        $snapshotEncoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($snapshotJson))
+        Assert-BecConnection
+        $savedSnapshot = $snapshotEncoded | & $Python -I -m bec.exchange_snapshot --directory $directory
+        if ($LASTEXITCODE -ne 0) { throw 'Current mailbox observations failed validation. No snapshot bytes were saved.' }
+        Assert-BecConnection
+        $snapshotReceipt = $savedSnapshot | ConvertFrom-Json
+        if ($snapshotReceipt.sha256 -isnot [string] -or $snapshotReceipt.sha256 -cnotmatch '^[a-f0-9]{64}$' -or
+            $snapshotReceipt.path -isnot [string] -or [string]::IsNullOrWhiteSpace($snapshotReceipt.path)) {
+            throw 'The snapshot writer did not return a valid saved path and byte hash.'
+        }
+        $snapshotPath = $snapshotReceipt.path
+        $snapshotHash = $snapshotReceipt.sha256
+        Write-Host "Current mailbox snapshot saved in $snapshotPath with SHA-256 $snapshotHash"
+    }
     Write-Host "Local Exchange export for $account saved in $directory"
-    & $Python -I -m bec --root $plan.root offline --bundle $bundle --tenant $plan.tenant --directory-id $plan.tenant --user $account --start $plan.start --end $plan.end
+    $offlineArgs = @('--root', $plan.root, 'offline', '--bundle', $bundle, '--tenant', $plan.tenant,
+        '--directory-id', $plan.tenant, '--user', $account, '--start', $plan.start, '--end', $plan.end, '--review-package')
+    if ($snapshotPath) { $offlineArgs += @('--exchange-snapshot', $snapshotPath, '--snapshot-sha256', $snapshotHash) }
+    & $Python -I -m bec @offlineArgs
     if ($LASTEXITCODE -notin 0, 2) { exit $LASTEXITCODE }
     if ($LASTEXITCODE -eq 2) { $result = 2 }
 }

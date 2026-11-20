@@ -20,4 +20,9 @@ jobs:
           python-version: '3.12'
       - run: python -m pip install ".[live]"
       - run: python scripts/installed_smoke.py
+      - name: Run offline command and package tests
+        run: python -m unittest discover -s tests -v
+      - name: Check native PowerShell guards without an Exchange connection
+        shell: pwsh
+        run: ./tests/test_exchange_guards.ps1
       - run: python -m pip wheel . --no-deps -w dist

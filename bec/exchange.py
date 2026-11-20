@@ -97,15 +97,26 @@ def plan(args):
     print(f"Queryable UTC: {first} to {end}.\n"
           f"Up to {len(chunks)*2} directional trace queries per mailbox, {LIMIT} rows per query.\n"
           f"Local case store: {root}", file=sys.stderr)
+    mailbox_state = getattr(args, "mailbox_state", False)
+    if mailbox_state:
+        print("Current-state reads for each named mailbox: inbox rules (including hidden rules when available), "
+              "forwarding, Full Access, Send As and Send on Behalf. These are observations at collection time. "
+              "The dates above apply to message traces.", file=sys.stderr)
     question = "Collect these scoped message traces?"
     if first != start:
         print(f"Unavailable live: {start} to {first}. Exchange retains up to 90 days. "
               "Older authorized exports require a separate offline case.", file=sys.stderr)
         question = "Collect only the displayed retained interval?"
+    if mailbox_state:
+        question = ("Collect traces only for the retained interval and read the displayed current mailbox state?"
+                    if first != start else "Collect the displayed message traces and current mailbox state?")
     if reply(question + " Type yes to continue [no]:").casefold() != "yes":
         raise CaseError("Investigation cancelled before collection.")
-    return dict(tenant=tenant, operator=operator, connection=str(connection_id), start=start, end=end,
-                planned_at=planned_at, chunks=chunks, accounts=accounts, root=str(root), limit=LIMIT)
+    result = dict(tenant=tenant, operator=operator, connection=str(connection_id), start=start, end=end,
+                  planned_at=planned_at, chunks=chunks, accounts=accounts, root=str(root), limit=LIMIT)
+    if mailbox_state:
+        result["snapshot_schema"] = "bec.exchange-snapshot/v1"
+    return result
 
 
 class TraceEndBoundary(CaseError):
@@ -329,7 +340,7 @@ class ExchangeReceipt:
             queryable_basis="90-day retention at planning" if self.planned_at else "v2 declared window; per-read times unavailable",
             caveat="Scoped message traces only. Returned or empty pages do not establish complete coverage. "
                    "Access, delayed ingestion and retention remain unconfirmed.",
-            audit_gap="Mailbox audit was not collected. Current inbox rules were not read.")
+            audit_gap="Mailbox audit was not collected. Current mailbox settings are reported separately when a snapshot is available.")
 
     def coverage(self):
         result = {}
@@ -352,8 +363,9 @@ class ExchangeReceipt:
                     start=gap["start"], end=gap["end"], direction=entry["direction"], receipt_sha256=self.sha,
                     reason=f"The rolling retention safety cutoff excluded {gap['start']} to {gap['end']} before read {key}.")
         result["coverage:ual"] = dict(dataset="ual", status="gap", receipt_sha256=self.sha,
-            reason="Mailbox audit was not collected. The Exchange adapter captures scoped message traces only.")
-        result["exchange:inbox_rules"] = dict(dataset="ual", status="gap", reason="Current inbox rules were not read.")
+            reason="Mailbox audit was not collected by the Exchange adapter.")
+        result["exchange:inbox_rules"] = dict(dataset="ual", status="gap",
+            reason="The trace receipt contains no current inbox rules. See the separate mailbox snapshot if available.")
         return result
 
 
@@ -361,6 +373,7 @@ def main():
     parser = argparse.ArgumentParser(description="Plan or preserve scoped Exchange message traces.")
     actions = parser.add_subparsers(dest="action", required=True)
     scope = actions.add_parser("plan-session")
+    scope.add_argument("--mailbox-state", action="store_true")
     for key in ("tenant", "operator", "connection"):
         scope.add_argument("--" + key, required=True)
     for key in ("start", "end", "root"):
